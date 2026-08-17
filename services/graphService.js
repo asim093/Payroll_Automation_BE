@@ -1,0 +1,389 @@
+const { ConfidentialClientApplication } = require('@azure/msal-node');
+
+const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
+
+const msalConfig = {
+  auth: {
+    clientId: process.env.CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${process.env.TENANT_ID}`,
+    clientSecret: process.env.CLIENT_SECRET,
+  },
+};
+
+const cca = new ConfidentialClientApplication(msalConfig);
+
+/**
+ * Get an app-only access token for Microsoft Graph using the
+ * client-credentials flow (same logic as test-auth.js, reusable).
+ */
+const getAccessToken = async () => {
+  try {
+    const result = await cca.acquireTokenByClientCredential({
+      scopes: ['https://graph.microsoft.com/.default'],
+    });
+    return result.accessToken;
+  } catch (error) {
+    console.error(
+      `getAccessToken ERROR: ${error.errorCode || 'unknown'} - ${error.message}`
+    );
+    throw error;
+  }
+};
+
+// Every function below optionally accepts an accessToken — pass one (e.g.
+// from delegatedAuthService.getAccessTokenFromRefreshToken()) to call Graph
+// on behalf of a signed-in user; omit it to fall back to the app-only
+// client-credentials token from getAccessToken() above. This is what lets
+// the same functions serve both processInbox.js (app-only) and
+// processInboxDelegated.js (delegated) without duplicating any code.
+const resolveAccessToken = async (accessToken) => accessToken || getAccessToken();
+
+// App-only calls address a mailbox as "users/{mailboxEmail}"; delegated
+// calls address the signed-in user's own mailbox as "me" and don't take a
+// mailbox address at all. Passing no mailboxEmail selects "me".
+const mailboxSegment = (mailboxEmail) =>
+  mailboxEmail ? `users/${encodeURIComponent(mailboxEmail)}` : 'me';
+
+/**
+ * Fetch the most recent, unread emails from a mailbox folder.
+ * GET /{users/{mailboxEmail}|me}/messages
+ *     ?$top=25&$orderby=receivedDateTime desc&$filter=isRead eq false
+ * — or, when folderName is given —
+ * GET /{users/{mailboxEmail}|me}/mailFolders/{folderName}/messages?...
+ *
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ * @param {string} [accessToken] - omit to use the app-only token
+ * @param {string} [folderName] - omit for the default Inbox behavior
+ *   (backward-compatible); pass a Graph well-known folder name to check a
+ *   different folder instead, e.g. "JunkEmail" for the Junk Email folder.
+ */
+const getRecentEmails = async (mailboxEmail, accessToken, folderName) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+
+    const base = folderName
+      ? `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/mailFolders/${encodeURIComponent(folderName)}/messages`
+      : `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages`;
+
+    const url = new URL(base);
+    url.searchParams.set('$top', '25');
+    url.searchParams.set('$orderby', 'receivedDateTime desc');
+    // Only unread emails — avoids reprocessing everything already sitting
+    // in a mailbox that had mail in it before we started polling it.
+    url.searchParams.set('$filter', 'isRead eq false');
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(
+        `getRecentEmails ERROR (${folderName || 'Inbox'}): status ${response.status} - ${errorBody}`
+      );
+      throw new Error(`Graph API error ${response.status}: ${errorBody}`);
+    }
+
+    const data = await response.json();
+    return data.value;
+  } catch (error) {
+    console.error(`getRecentEmails ERROR (${folderName || 'Inbox'}): ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * Fetch attachments for a specific email.
+ * GET /{users/{mailboxEmail}|me}/messages/{messageId}/attachments
+ *
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ * @param {string} messageId
+ * @param {string} [accessToken] - omit to use the app-only token
+ */
+const getEmailAttachments = async (mailboxEmail, messageId, accessToken) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+
+    const url = `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages/${encodeURIComponent(
+      messageId
+    )}/attachments`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(
+        `getEmailAttachments ERROR: status ${response.status} - ${errorBody}`
+      );
+      throw new Error(`Graph API error ${response.status}: ${errorBody}`);
+    }
+
+    const data = await response.json();
+    return data.value;
+  } catch (error) {
+    console.error(`getEmailAttachments ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * Assign a category to an email, preserving any categories already on it.
+ * 1. GET the message with $select=categories to read its current categories.
+ * 2. Add categoryName to that array if it isn't already present.
+ * 3. PATCH the message with the merged array.
+ *
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ * @param {string} messageId
+ * @param {string} categoryName
+ * @param {string} [accessToken] - omit to use the app-only token
+ */
+const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+
+    const messageUrl = `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages/${encodeURIComponent(
+      messageId
+    )}`;
+
+    // 1. Fetch current categories
+    const getResponse = await fetch(`${messageUrl}?$select=categories`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!getResponse.ok) {
+      const errorBody = await getResponse.text();
+      console.error(
+        `assignCategory ERROR (fetch categories): status ${getResponse.status} - ${errorBody}`
+      );
+      throw new Error(`Graph API error ${getResponse.status}: ${errorBody}`);
+    }
+
+    const messageData = await getResponse.json();
+    const existingCategories = messageData.categories || [];
+
+    // 2. Merge in the new category, avoiding duplicates
+    const mergedCategories = existingCategories.includes(categoryName)
+      ? existingCategories
+      : [...existingCategories, categoryName];
+
+    // 3. PATCH the message with the full merged array
+    const patchResponse = await fetch(messageUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ categories: mergedCategories }),
+    });
+
+    if (!patchResponse.ok) {
+      const errorBody = await patchResponse.text();
+      console.error(
+        `assignCategory ERROR (patch categories): status ${patchResponse.status} - ${errorBody}`
+      );
+      throw new Error(`Graph API error ${patchResponse.status}: ${errorBody}`);
+    }
+
+    const data = await patchResponse.json();
+    return data;
+  } catch (error) {
+    console.error(`assignCategory ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * Ensures a category exists in the mailbox's master category list, WITH a
+ * color, before it's ever assigned to a message. Outlook's category colors
+ * live on the mailbox-level master list (outlook/masterCategories), not on
+ * the message — assigning a category name to a message that isn't in that
+ * list yet just creates a colorless entry. Never overwrites an existing
+ * category's color (e.g. if Marcel already made a "Processed" category in
+ * some other color by hand) — does nothing if the name already exists.
+ *
+ * @param {string} categoryName
+ * @param {string} color - a Graph preset color id, e.g. "preset1". Presets
+ *   run preset0-preset24: 0 Red, 1 Orange, 2 Brown, 3 Yellow, 4 Green,
+ *   5 Teal, 6 Olive, 7 Blue, 8 Purple, 9 Cranberry, 10 Steel, 11 DarkSteel,
+ *   12 Gray, 13 DarkGray, 14 Black, 15-24 Dark* repeats of 0-9.
+ *   Source: https://learn.microsoft.com/en-us/graph/api/resources/outlookcategory
+ * @param {string} [accessToken] - omit to use the app-only token
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ */
+const ensureCategoryExists = async (categoryName, color, accessToken, mailboxEmail) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+    const segment = mailboxSegment(mailboxEmail);
+    const baseUrl = `${GRAPH_BASE_URL}/${segment}/outlook/masterCategories`;
+
+    const listResponse = await fetch(baseUrl, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    if (!listResponse.ok) {
+      const errorBody = await listResponse.text();
+      throw new Error(`Could not list master categories (${listResponse.status}): ${errorBody}`);
+    }
+    const listData = await listResponse.json();
+    const existing = (listData.value || []).find(
+      (category) => category.displayName.toLowerCase() === categoryName.toLowerCase()
+    );
+
+    if (existing) {
+      console.log(
+        `  [CATEGORY SETUP] "${categoryName}" already exists (color: ${existing.color}) - leaving it as-is.`
+      );
+      return existing;
+    }
+
+    const createResponse = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: categoryName, color }),
+    });
+    if (!createResponse.ok) {
+      const errorBody = await createResponse.text();
+      throw new Error(`Could not create category "${categoryName}" (${createResponse.status}): ${errorBody}`);
+    }
+    const created = await createResponse.json();
+    console.log(`  [CATEGORY SETUP] Created "${categoryName}" category with color ${color}.`);
+    return created;
+  } catch (error) {
+    console.error(`ensureCategoryExists ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * NOT CURRENTLY USED - boss confirmed emails should stay in original
+ * location (Inbox), only file-copies move to destination (Dropbox/local).
+ * Kept here in case requirements change.
+ *
+ * Find (or create) a nested mail folder by path, e.g. "Clients/Test Client
+ * One" — walks the path one segment at a time, creating any segment that
+ * doesn't already exist as a child of the previous one, and returns the
+ * final (innermost) folder's id.
+ *
+ * @param {string} folderPath - e.g. "Clients/Test Client One"
+ * @param {string} [accessToken] - omit to use the app-only token
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ */
+const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+    const segment = mailboxSegment(mailboxEmail);
+    const pathSegments = folderPath
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    let parentId = null; // null = root level (mailFolders directly, no parent)
+
+    for (const folderName of pathSegments) {
+      // OData string literals escape a single quote by doubling it.
+      const escapedName = folderName.replace(/'/g, "''");
+      const listBase = parentId
+        ? `${GRAPH_BASE_URL}/${segment}/mailFolders/${parentId}/childFolders`
+        : `${GRAPH_BASE_URL}/${segment}/mailFolders`;
+      const listUrl = `${listBase}?$filter=${encodeURIComponent(`displayName eq '${escapedName}'`)}`;
+
+      const listResponse = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      if (!listResponse.ok) {
+        const errorBody = await listResponse.text();
+        throw new Error(`list "${folderName}" failed (${listResponse.status}): ${errorBody}`);
+      }
+      const listData = await listResponse.json();
+
+      if (listData.value && listData.value.length > 0) {
+        parentId = listData.value[0].id;
+        continue;
+      }
+
+      // Not found under this parent — create it.
+      const createResponse = await fetch(listBase, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: folderName }),
+      });
+      if (!createResponse.ok) {
+        const errorBody = await createResponse.text();
+        throw new Error(`create "${folderName}" failed (${createResponse.status}): ${errorBody}`);
+      }
+      const created = await createResponse.json();
+      parentId = created.id;
+    }
+
+    return parentId;
+  } catch (error) {
+    console.error(`findOrCreateOutlookFolder ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * NOT CURRENTLY USED - boss confirmed emails should stay in original
+ * location (Inbox), only file-copies move to destination (Dropbox/local).
+ * Kept here in case requirements change.
+ *
+ * Move an email into a different mail folder.
+ * POST /{users/{mailboxEmail}|me}/messages/{messageId}/move  { destinationId }
+ *
+ * Note: Graph gives the moved message a NEW id in the destination folder —
+ * the original messageId stops being addressable once this call succeeds.
+ * Call this AFTER anything else that still needs the original id (e.g.
+ * assignCategory), never before.
+ *
+ * @param {string} messageId
+ * @param {string} folderId - from findOrCreateOutlookFolder()
+ * @param {string} [accessToken] - omit to use the app-only token
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ */
+const moveEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+    const segment = mailboxSegment(mailboxEmail);
+
+    const url = `${GRAPH_BASE_URL}/${segment}/messages/${encodeURIComponent(messageId)}/move`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destinationId: folderId }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`moveEmailToFolder ERROR: status ${response.status} - ${errorBody}`);
+      throw new Error(`Graph API error ${response.status}: ${errorBody}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    console.error(`moveEmailToFolder ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
+module.exports = {
+  getAccessToken,
+  getRecentEmails,
+  getEmailAttachments,
+  assignCategory,
+  ensureCategoryExists,
+  findOrCreateOutlookFolder,
+  moveEmailToFolder,
+};

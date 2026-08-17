@@ -1,0 +1,79 @@
+[
+  {
+    "messageId": "AAMkAGI1msgID-001",
+    "sender": "sender1@example.com",
+    "subject": "Payroll files for this week",
+    "receivedDateTime": "2026-08-10T09:15:00Z",
+    "hasAttachments": true,
+    "attachments": [
+      { "name": "payroll_report.csv", "contentBase64": "dGVzdCBmaWxlIGNvbnRlbnQ=" }
+    ]
+  },
+  {
+    "messageId": "AAMkAGI1msgID-002",
+    "sender": "info@testcorp.com",
+    "subject": "Timesheet submission",
+    "receivedDateTime": "2026-08-11T14:30:00Z",
+    "hasAttachments": true,
+    "attachments": [
+      { "name": "payroll_report.csv", "contentBase64": "dGVzdCBmaWxlIGNvbnRlbnQ=" }
+    ]
+  },
+  {
+    "messageId": "AAMkAGI1msgID-003",
+    "sender": "random@unknown.org",
+    "subject": "Unrelated inquiry",
+    "receivedDateTime": "2026-08-12T08:00:00Z",
+    "hasAttachments": false,
+    "attachments": []
+  },
+  {
+    "messageId": "AAMkAGI1msgID-001",
+    "sender": "sender1@example.com",
+    "subject": "Payroll files for this week",
+    "receivedDateTime": "2026-08-10T09:15:00Z",
+    "hasAttachments": true,
+    "attachments": [
+      { "name": "payroll_report.csv", "contentBase64": "dGVzdCBmaWxlIGNvbnRlbnQ=" }
+    ]
+  },
+  {
+    "messageId": "AAMkAGI1msgID-005",
+    "sender": "notifications@logiforms.com",
+    "subject": "Brook Davies Has Created a New Item in Test Client One Folder",
+    "receivedDateTime": "2026-08-13T10:00:00Z",
+    "hasAttachments": false,
+    "attachments": []
+  },
+  {
+    "messageId": "AAMkAGI1msgID-006",
+    "sender": "sender1@example.com",
+    "subject": "Payroll summary and timesheet - two files",
+    "receivedDateTime": "2026-08-14T09:00:00Z",
+    "hasAttachments": true,
+    "attachments": [
+      { "name": "payroll_summary.csv", "contentBase64": "cGF5cm9sbCBzdW1tYXJ5IGRhdGE=" },
+      { "name": "timesheet.csv", "contentBase64": "dGltZXNoZWV0IGhvdXJzIGRhdGE=" }
+    ]
+  },
+  {
+    "messageId": "AAMkAGI1msgID-007",
+    "sender": "sender1@example.com",
+    "subject": "Second payroll batch (filename-collision test)",
+    "receivedDateTime": "2026-08-15T09:00:00Z",
+    "hasAttachments": true,
+    "attachments": [
+      { "name": "payroll_report.csv", "contentBase64": "c2Vjb25kIGJhdGNoIC0gZGlmZmVyZW50IGNvbnRlbnQgZm9yIGNvbGxpc2lvbiB0ZXN0" }
+    ]
+  },
+  {
+    "messageId": "AAMkAGI1msgID-008",
+    "sender": "sender1@example.com",
+    "subject": "Payroll file (corrupt-attachment test)",
+    "receivedDateTime": "2026-08-16T09:00:00Z",
+    "hasAttachments": true,
+    "attachments": [
+      { "name": "corrupt_payroll.csv", "contentBase64": "" }
+    ]
+  }
+]
