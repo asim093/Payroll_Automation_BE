@@ -68,8 +68,6 @@ const getRecentEmails = async (mailboxEmail, accessToken, folderName) => {
     const url = new URL(base);
     url.searchParams.set('$top', '25');
     url.searchParams.set('$orderby', 'receivedDateTime desc');
-    // Only unread emails — avoids reprocessing everything already sitting
-    // in a mailbox that had mail in it before we started polling it.
     url.searchParams.set('$filter', 'isRead eq false');
 
     const response = await fetch(url, {
