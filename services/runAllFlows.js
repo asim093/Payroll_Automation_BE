@@ -67,68 +67,144 @@ const runShareFileScanFlow = async () => {
   }
 };
 
+// Cron-overlap guard threshold — a lock older than this is treated as
+// abandoned (the run that acquired it almost certainly crashed before
+// reaching the finally-block that would have released it) rather than
+// blocking every future cycle forever. Picked well above the 5-minute cron
+// interval so a merely-slow-but-still-running scan is never mistaken for a
+// stale one.
+const EMAIL_SCAN_LOCK_STALE_MS = 15 * 60 * 1000; // 15 minutes
+
 const runAllFlows = async () => {
   console.log(`\n[RUN-ALL-FLOWS] Job started at ${new Date().toISOString()}`);
 
-  // Delta-fetch watermark for email-scanning (see
-  // graphService.getRecentEmails) — read once here and shared by BOTH email
-  // flows (delegated + app-only), since they poll the same underlying
-  // timeline and there's no reason to track two separate watermarks.
-  // Replaces the old isRead:false filter, which permanently missed any
-  // email a user opened in Outlook before our scan got to it.
-  const existingStatus = await SystemStatus.findOne();
-  const lastEmailScanAt = existingStatus?.lastEmailScanAt;
-  const sinceTimestamp = lastEmailScanAt || new Date(Date.now() - 60 * 60 * 1000);
-  console.log(
-    `[RUN-ALL-FLOWS] Email scan window starts at ${sinceTimestamp.toISOString()}` +
-      (lastEmailScanAt ? '' : ' (no previous scan recorded - defaulting to last 1 hour)')
+  // --- Overlap guard -----------------------------------------------------
+  // Without this, a scan that runs longer than the 5-minute cron interval
+  // (plausible under high email volume — see the per-email network-call
+  // count in emailProcessor.js) would still be in-flight when the next
+  // cron tick fires, and a second concurrent runAllFlows() would start
+  // fetching/processing the same emails — a duplicate-Dropbox-upload /
+  // duplicate-category-call race that only gets caught at the very end by
+  // EmailLog's unique messageId index, after the wasted work already
+  // happened.
+  //
+  // The check-and-acquire is done as ONE atomic findOneAndUpdate, not a
+  // separate find-then-set — a live concurrency test (firing two
+  // runAllFlows() calls at the exact same instant) proved that a plain
+  // "read the flag, then write it" sequence lets both concurrent calls see
+  // "unlocked" before either has written anything, so both proceed. Baking
+  // the "is it actually free-or-stale" condition into the update's filter
+  // makes MongoDB itself the tie-breaker: only one of two racing
+  // findOneAndUpdate calls against the same document can match-and-update
+  // first, and the loser gets null back — reliably, not just "usually".
+  const staleThreshold = new Date(Date.now() - EMAIL_SCAN_LOCK_STALE_MS);
+
+  let lockDoc = await SystemStatus.findOneAndUpdate(
+    { $or: [{ isEmailScanRunning: { $ne: true } }, { emailScanStartedAt: { $lt: staleThreshold } }] },
+    { isEmailScanRunning: true, emailScanStartedAt: new Date() },
+    { returnDocument: 'after' }
+    // Deliberately NOT upsert:true here — if the filter doesn't match, it
+    // should mean "lock is actively held by someone else", not "create a
+    // second SystemStatus document" (which upsert would do and would break
+    // the single-document assumption every time the lock is legitimately busy).
   );
 
-  // Captured BEFORE running the flows (not after they finish) so the new
-  // watermark stays conservative — anything that arrives while THIS scan is
-  // still in progress gets picked up again next cycle instead of possibly
-  // being skipped by a watermark that moved past it.
-  const scanStartedAt = new Date();
+  if (!lockDoc) {
+    // The filter didn't match. Two possibilities: (a) the lock is actively
+    // held and still fresh — the real "skip this cycle" case — or (b) no
+    // SystemStatus document exists at all yet (the very first call this
+    // app has ever made), which also can't match an $or filter built
+    // entirely out of field comparisons. Tell them apart before deciding.
+    const existing = await SystemStatus.findOne();
 
-  // Sequential (not parallel) on purpose - same behaviour as the original
-  // scheduler.js - but each still has its own try/catch, so a failure in
-  // one does not stop the next from running.
-  const delegatedFlow = await runDelegatedFlow(sinceTimestamp);
-  const appOnlyFlow = await runAppOnlyFlow(sinceTimestamp);
-  const shareFileScan = await runShareFileScanFlow();
+    if (existing) {
+      const lockAgeMs = Date.now() - new Date(existing.emailScanStartedAt).getTime();
+      console.log(
+        `[RUN-ALL-FLOWS] Previous scan still running (started ${Math.round(lockAgeMs / 1000)}s ago) - skipping this cycle.`
+      );
+      return { skipped: true, reason: 'previous_scan_still_running' };
+    }
 
-  console.log(`[RUN-ALL-FLOWS] Job ended at ${new Date().toISOString()}`);
-
-  const results = { delegatedFlow, appOnlyFlow, shareFileScan };
-  const overallSuccess = [delegatedFlow, appOnlyFlow, shareFileScan].every((flow) => flow.success);
-
-  // Only advance the email-scan watermark if BOTH email flows completed
-  // without throwing — ShareFile's own success/failure doesn't affect it
-  // (unrelated concern). A genuine failure in either email flow leaves
-  // lastEmailScanAt untouched, so the next cycle re-covers the same window
-  // instead of silently skipping whatever arrived during the failed run.
-  // Safe to re-cover: EmailLog's messageId-based duplicate check (see
-  // processEmail()) skips anything already processed.
-  const emailScanSucceeded = delegatedFlow.success && appOnlyFlow.success;
-
-  try {
-    await SystemStatus.findOneAndUpdate(
+    // First-ever call, nothing to race against — safe to upsert here.
+    lockDoc = await SystemStatus.findOneAndUpdate(
       {},
-      {
-        lastRunAt: new Date(),
-        lastRunResults: results,
-        lastRunSuccess: overallSuccess,
-        ...(emailScanSucceeded ? { lastEmailScanAt: scanStartedAt } : {}),
-      },
+      { isEmailScanRunning: true, emailScanStartedAt: new Date() },
       { upsert: true, returnDocument: 'after' }
     );
-  } catch (error) {
-    // Don't let a DB write failure here mask the actual run results from
-    // whoever called runAllFlows().
-    console.error('[RUN-ALL-FLOWS] Failed to persist SystemStatus:', error.message);
   }
 
-  return { results, overallSuccess };
+  const existingStatus = lockDoc;
+
+  try {
+    // Delta-fetch watermark for email-scanning (see
+    // graphService.getRecentEmails) — read once here and shared by BOTH
+    // email flows (delegated + app-only), since they poll the same
+    // underlying timeline and there's no reason to track two separate
+    // watermarks. Replaces the old isRead:false filter, which permanently
+    // missed any email a user opened in Outlook before our scan got to it.
+    const lastEmailScanAt = existingStatus?.lastEmailScanAt;
+    const sinceTimestamp = lastEmailScanAt || new Date(Date.now() - 60 * 60 * 1000);
+    console.log(
+      `[RUN-ALL-FLOWS] Email scan window starts at ${sinceTimestamp.toISOString()}` +
+        (lastEmailScanAt ? '' : ' (no previous scan recorded - defaulting to last 1 hour)')
+    );
+
+    // Captured BEFORE running the flows (not after they finish) so the new
+    // watermark stays conservative — anything that arrives while THIS scan
+    // is still in progress gets picked up again next cycle instead of
+    // possibly being skipped by a watermark that moved past it.
+    const scanStartedAt = new Date();
+
+    // Sequential (not parallel) on purpose - same behaviour as the original
+    // scheduler.js - but each still has its own try/catch, so a failure in
+    // one does not stop the next from running.
+    const delegatedFlow = await runDelegatedFlow(sinceTimestamp);
+    const appOnlyFlow = await runAppOnlyFlow(sinceTimestamp);
+    const shareFileScan = await runShareFileScanFlow();
+
+    console.log(`[RUN-ALL-FLOWS] Job ended at ${new Date().toISOString()}`);
+
+    const results = { delegatedFlow, appOnlyFlow, shareFileScan };
+    const overallSuccess = [delegatedFlow, appOnlyFlow, shareFileScan].every((flow) => flow.success);
+
+    // Only advance the email-scan watermark if BOTH email flows completed
+    // without throwing — ShareFile's own success/failure doesn't affect it
+    // (unrelated concern). A genuine failure in either email flow leaves
+    // lastEmailScanAt untouched, so the next cycle re-covers the same window
+    // instead of silently skipping whatever arrived during the failed run.
+    // Safe to re-cover: EmailLog's messageId-based duplicate check (see
+    // processEmail()) skips anything already processed.
+    const emailScanSucceeded = delegatedFlow.success && appOnlyFlow.success;
+
+    try {
+      await SystemStatus.findOneAndUpdate(
+        {},
+        {
+          lastRunAt: new Date(),
+          lastRunResults: results,
+          lastRunSuccess: overallSuccess,
+          ...(emailScanSucceeded ? { lastEmailScanAt: scanStartedAt } : {}),
+        },
+        { upsert: true, returnDocument: 'after' }
+      );
+    } catch (error) {
+      // Don't let a DB write failure here mask the actual run results from
+      // whoever called runAllFlows().
+      console.error('[RUN-ALL-FLOWS] Failed to persist SystemStatus:', error.message);
+    }
+
+    return { results, overallSuccess };
+  } finally {
+    // ALWAYS release the lock — success or error — so a crash never leaves
+    // every future cycle blocked until the 15-minute staleness window
+    // passes. This is what makes the stale-lock check above a safety-net
+    // rather than the primary release mechanism.
+    try {
+      await SystemStatus.findOneAndUpdate({}, { isEmailScanRunning: false });
+    } catch (error) {
+      console.error('[RUN-ALL-FLOWS] Failed to release scan lock:', error.message);
+    }
+  }
 };
 
 module.exports = { runAllFlows, runDelegatedFlow, runAppOnlyFlow, runShareFileScanFlow };

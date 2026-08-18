@@ -44,6 +44,42 @@ const resolveAccessToken = async (accessToken) => accessToken || getAccessToken(
 const mailboxSegment = (mailboxEmail) =>
   mailboxEmail ? `users/${encodeURIComponent(mailboxEmail)}` : 'me';
 
+// Graph throttles with HTTP 429 under sustained load (plausible during a
+// high-volume email batch — see runAllFlows.js's overlap-guard comment for
+// the same underlying concern). Graph's 429 response includes a
+// "Retry-After" header telling us exactly how long to back off, in
+// seconds — this wraps a plain fetch() call, waits that long (or 5s if the
+// header is missing), and retries the SAME request, up to
+// MAX_RATE_LIMIT_RETRIES times. After that many failed attempts it just
+// returns the last (still-429) response as-is, so the caller's existing
+// `if (!response.ok) throw ...` handling takes over unchanged — a
+// persistent rate-limit still surfaces as a real, visible error rather
+// than retrying forever. Non-429 responses (success or any other error)
+// are returned immediately on the first attempt, with zero added delay.
+const MAX_RATE_LIMIT_RETRIES = 2;
+const DEFAULT_RATE_LIMIT_WAIT_MS = 5000;
+
+const fetchWithRetry = async (url, options, attempt = 0) => {
+  const response = await fetch(url, options);
+
+  if (response.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+    const retryAfterHeader = response.headers.get('Retry-After');
+    const retryAfterSeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
+    const waitMs =
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? retryAfterSeconds * 1000
+        : DEFAULT_RATE_LIMIT_WAIT_MS;
+
+    console.warn(
+      `  [GRAPH RATE-LIMIT] 429 for ${url} - retrying after ${waitMs / 1000}s (attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES})...`
+    );
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return fetchWithRetry(url, options, attempt + 1);
+  }
+
+  return response;
+};
+
 /**
  * Fetch emails received since a given timestamp from a mailbox folder.
  * GET /{users/{mailboxEmail}|me}/messages
@@ -123,7 +159,7 @@ const getEmailAttachments = async (mailboxEmail, messageId, accessToken) => {
       messageId
     )}/attachments`;
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -167,7 +203,7 @@ const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken
     )}`;
 
     // 1. Fetch current categories
-    const getResponse = await fetch(`${messageUrl}?$select=categories`, {
+    const getResponse = await fetchWithRetry(`${messageUrl}?$select=categories`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -192,7 +228,7 @@ const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken
       : [...existingCategories, categoryName];
 
     // 3. PATCH the message with the full merged array
-    const patchResponse = await fetch(messageUrl, {
+    const patchResponse = await fetchWithRetry(messageUrl, {
       method: 'PATCH',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -241,7 +277,7 @@ const ensureCategoryExists = async (categoryName, color, accessToken, mailboxEma
     const segment = mailboxSegment(mailboxEmail);
     const baseUrl = `${GRAPH_BASE_URL}/${segment}/outlook/masterCategories`;
 
-    const listResponse = await fetch(baseUrl, {
+    const listResponse = await fetchWithRetry(baseUrl, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     });
     if (!listResponse.ok) {
@@ -260,7 +296,7 @@ const ensureCategoryExists = async (categoryName, color, accessToken, mailboxEma
       return existing;
     }
 
-    const createResponse = await fetch(baseUrl, {
+    const createResponse = await fetchWithRetry(baseUrl, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ displayName: categoryName, color }),

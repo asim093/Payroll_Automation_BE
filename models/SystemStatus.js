@@ -31,6 +31,26 @@ const systemStatusSchema = new mongoose.Schema(
     lastEmailScanAt: {
       type: Date,
     },
+    // Cron-overlap guard (see runAllFlows.js) — set true right before a
+    // scan cycle's email flows start, false again once they finish
+    // (success or error, via try/finally). If a cycle finds this already
+    // true and emailScanStartedAt is recent, it skips itself instead of
+    // running a second scan concurrently with the first (which could
+    // double-process the same emails - see the race-condition analysis
+    // that led to this fix).
+    isEmailScanRunning: {
+      type: Boolean,
+      default: false,
+    },
+    // When the current (or most recent) lock was acquired. Used to detect
+    // a STALE lock — if a previous run crashed without reaching its
+    // finally-block, isEmailScanRunning would stay stuck at true forever
+    // without this: a lock older than the staleness threshold is treated
+    // as abandoned and overridden rather than blocking every future cycle.
+    emailScanStartedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
