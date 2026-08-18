@@ -6,6 +6,8 @@
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
 const { formatError } = require('../utils/formatError');
+const { getSettings } = require('./settingsService');
+const { substituteTemplate } = require('../utils/pathTemplate');
 
 /**
  * Authenticate with ShareFile via the OAuth2 password grant flow.
@@ -107,12 +109,22 @@ const isFileItem = (item) =>
   item['odata.type'] ? item['odata.type'].includes('.File') : typeof item.Id === 'string' && item.Id.startsWith('fi');
 
 /**
- * Lists every file (not subfolders) directly inside Clients/{clientName}/.
- * Throws if the folder doesn't exist — callers that want to treat a missing
- * folder as "just no files yet" should catch that themselves.
+ * Lists every file (not subfolders) directly inside the folder resolved
+ * from Settings' shareFilePathTemplate (one free-text string like
+ * "Clients/{Client Name}", admin-editable in full via PUT /api/settings)
+ * with "{Client Name}" substituted for clientFolderSegment (see
+ * utils/pathTemplate.js). Throws if the folder doesn't exist — callers
+ * that want to treat a missing folder as "just no files yet" should catch
+ * that themselves.
+ *
+ * @param {string} clientFolderSegment - the client-specific part of the
+ *   path. Callers pass client.shareFilePath if set, falling back to
+ *   client.name otherwise — this function itself doesn't know about the
+ *   Client model.
  */
-const listFilesInShareFileFolder = async (clientName) => {
-  const folderPath = `Clients/${clientName}`;
+const listFilesInShareFileFolder = async (clientFolderSegment) => {
+  const { shareFilePathTemplate } = await getSettings();
+  const folderPath = substituteTemplate(shareFilePathTemplate, clientFolderSegment);
 
   try {
     const { apiBase, authHeaders, homeId } = await getShareFileContext();
@@ -177,15 +189,16 @@ const downloadFileContentById = async (fileId) => {
 };
 
 /**
- * Finds the most recently uploaded file inside Clients/{clientName}/.
- * Returns { fileName, fileId, uploadedAt }. Throws a clear error if the
- * folder doesn't exist or has no files in it.
+ * Finds the most recently uploaded file inside the folder resolved from
+ * Settings' shareFilePathTemplate for clientFolderSegment. Returns
+ * { fileName, fileId, uploadedAt }. Throws a clear error if the folder
+ * doesn't exist or has no files in it.
  */
-const getLatestFileInShareFileFolder = async (clientName) => {
+const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
   try {
-    const files = await listFilesInShareFileFolder(clientName);
+    const files = await listFilesInShareFileFolder(clientFolderSegment);
     if (files.length === 0) {
-      throw new Error(`No files found in ShareFile folder for client "${clientName}"`);
+      throw new Error(`No files found in ShareFile folder for "${clientFolderSegment}"`);
     }
 
     // Newest first — CreationDate is when the file was uploaded;
@@ -201,16 +214,16 @@ const getLatestFileInShareFileFolder = async (clientName) => {
     };
   } catch (error) {
     console.error(
-      `getLatestFileInShareFileFolder ERROR: could not find latest file for "${clientName}" — ${formatError(error)}`
+      `getLatestFileInShareFileFolder ERROR: could not find latest file for "${clientFolderSegment}" — ${formatError(error)}`
     );
     throw error;
   }
 };
 
 /**
- * Fetch a file from ShareFile at Clients/{clientName}/{fileName} — or, if
- * fileName is omitted, auto-detects and downloads the most recently
- * uploaded file in that client's folder instead (see
+ * Fetch a file from ShareFile at {resolved shareFilePathTemplate}/{fileName}
+ * — or, if fileName is omitted, auto-detects and downloads the most
+ * recently uploaded file in that folder instead (see
  * getLatestFileInShareFileFolder()).
  *
  * NOTE: this notification-triggered, single-file fetch is the OLD approach.
@@ -223,10 +236,12 @@ const getLatestFileInShareFileFolder = async (clientName) => {
  * present so callers know what was actually fetched, which matters when it
  * was auto-detected rather than passed in explicitly.
  *
- * @param {string} clientName
+ * @param {string} clientFolderSegment - the client-specific part of the
+ *   path. Callers pass client.shareFilePath if set, falling back to
+ *   client.name otherwise.
  * @param {string} [fileName] - omit to auto-detect the latest file
  */
-const fetchFileFromShareFile = async (clientName, fileName) => {
+const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
   try {
     let fileId;
     let resolvedFileName;
@@ -235,7 +250,8 @@ const fetchFileFromShareFile = async (clientName, fileName) => {
       // Explicit filename given (e.g. for testing) — look it up by path.
       resolvedFileName = fileName;
       const { apiBase, authHeaders, homeId } = await getShareFileContext();
-      const itemPath = `Clients/${clientName}/${fileName}`;
+      const { shareFilePathTemplate } = await getSettings();
+      const itemPath = `${substituteTemplate(shareFilePathTemplate, clientFolderSegment)}/${fileName}`;
       const byPathUrl = `${apiBase}/Items(${homeId})/ByPath?path=${encodeURIComponent(itemPath)}`;
       const itemResponse = await fetch(byPathUrl, { headers: authHeaders });
       if (!itemResponse.ok) {
@@ -246,7 +262,7 @@ const fetchFileFromShareFile = async (clientName, fileName) => {
       fileId = item.Id;
     } else {
       // No filename given -> auto-detect the most recently uploaded file.
-      const latest = await getLatestFileInShareFileFolder(clientName);
+      const latest = await getLatestFileInShareFileFolder(clientFolderSegment);
       fileId = latest.fileId;
       resolvedFileName = latest.fileName;
       console.log(
@@ -258,7 +274,7 @@ const fetchFileFromShareFile = async (clientName, fileName) => {
     return { content, fileName: resolvedFileName };
   } catch (error) {
     console.error(
-      `fetchFileFromShareFile ERROR: could not fetch file for client "${clientName}"${
+      `fetchFileFromShareFile ERROR: could not fetch file for "${clientFolderSegment}"${
         fileName ? ` ("${fileName}")` : ' (auto-detect)'
       } — ${formatError(error)}`
     );
@@ -273,17 +289,25 @@ const fetchFileFromShareFile = async (clientName, fileName) => {
  * fetch above. A client whose folder doesn't exist yet is skipped (logged,
  * not fatal) rather than failing the whole scan.
  *
- * Returns an array of { clientId, clientName, fileName, fileId, content } —
- * one entry per new file found, content already downloaded.
+ * Looks the folder up under client.shareFilePath (falling back to
+ * client.name for clients created before that field existed), but the
+ * files it finds are Dropbox-bound under client.dropboxPath instead — the
+ * two folder segments are independent per-client settings, so both are
+ * carried through on each returned file (see dropboxFolderSegment).
+ *
+ * Returns an array of
+ * { clientId, clientName, dropboxFolderSegment, fileName, fileId, content }
+ * — one entry per new file found, content already downloaded.
  */
 const scanShareFileForNewFiles = async () => {
   const activeClients = await Client.find({ status: 'active' });
   const newFiles = [];
 
   for (const client of activeClients) {
+    const shareFileFolderSegment = client.shareFilePath || client.name;
     let files;
     try {
-      files = await listFilesInShareFileFolder(client.name);
+      files = await listFilesInShareFileFolder(shareFileFolderSegment);
     } catch (error) {
       console.warn(`  [SHAREFILE SCAN] Skipping "${client.name}" - ${formatError(error)}`);
       continue;
@@ -298,6 +322,7 @@ const scanShareFileForNewFiles = async () => {
         newFiles.push({
           clientId: client._id,
           clientName: client.name,
+          dropboxFolderSegment: client.dropboxPath || client.name,
           fileName: file.Name || file.FileName,
           fileId: file.Id,
           content,

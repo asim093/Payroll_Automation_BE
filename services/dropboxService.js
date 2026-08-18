@@ -1,6 +1,8 @@
 const { Dropbox } = require('dropbox');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { formatError } = require('../utils/formatError');
+const { getSettings } = require('./settingsService');
+const { substituteTemplate } = require('../utils/pathTemplate');
 
 // Same sanitization approach as fileStorage.js — client/file names can
 // contain characters that aren't safe in a Dropbox path.
@@ -54,28 +56,42 @@ const getDropboxAccessToken = async () => {
 };
 
 /**
- * Upload a file to Dropbox at
- * /WOTC/{clientName}/Payroll Files/{timestamp}_{fileName}. The timestamp
- * prefix (see generateUniqueFilename) stops two attachments with the same
- * original name from overwriting each other — without it, "overwrite" mode
- * below would silently replace an earlier file that happened to share a name.
- * Returns the uploaded file's Dropbox path on success.
+ * Upload a file to Dropbox. The destination FOLDER comes from Settings'
+ * dropboxPathTemplate (one free-text string like
+ * "WOTC/{Client Name}/Payroll Files", admin-editable in full via
+ * PUT /api/settings — see settingsService.js) with the literal
+ * "{Client Name}" placeholder substituted for clientFolderSegment (see
+ * utils/pathTemplate.js). The timestamp prefix (see generateUniqueFilename)
+ * stops two attachments with the same original name from overwriting each
+ * other — without it, "overwrite" mode below would silently replace an
+ * earlier file that happened to share a name. Returns the uploaded file's
+ * Dropbox path on success.
  *
- * @param {string} clientName
+ * @param {string} clientFolderSegment - the client-specific part of the
+ *   path. Callers pass client.dropboxPath if set, falling back to
+ *   client.name otherwise (see emailProcessor.js/processShareFileScan.js) —
+ *   this function itself doesn't know about the Client model, it just
+ *   substitutes whatever string it's given into the template.
  * @param {string} fileName
  * @param {Buffer} contentBuffer
  * @param {Date} [referenceDate] - pass the same Date used for other
  *   destinations (e.g. local disk) of this same attachment, so both end up
  *   with an identical unique filename.
  */
-const uploadFileToDropbox = async (clientName, fileName, contentBuffer, referenceDate) => {
+const uploadFileToDropbox = async (clientFolderSegment, fileName, contentBuffer, referenceDate) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = new Dropbox({ accessToken, fetch });
+  const { dropboxPathTemplate } = await getSettings();
 
-  const safeClientName = sanitizeForPath(clientName);
+  const resolvedFolder = substituteTemplate(dropboxPathTemplate, clientFolderSegment);
+  // Split on "/" first (the template's own directory separators), THEN
+  // sanitize each individual segment - sanitizeForPath also strips "/" so
+  // running it on the whole resolved string first would collapse the
+  // template's intentional folder structure into one flat name.
+  const folderSegments = resolvedFolder.split('/').map(sanitizeForPath).filter(Boolean);
   const uniqueName = generateUniqueFilename(fileName, referenceDate);
   const safeFileName = sanitizeForPath(uniqueName);
-  const dropboxPath = `/WOTC/${safeClientName}/Payroll Files/${safeFileName}`;
+  const dropboxPath = `/${[...folderSegments, safeFileName].join('/')}`;
 
   try {
     const response = await dbx.filesUpload({
@@ -92,7 +108,7 @@ const uploadFileToDropbox = async (clientName, fileName, contentBuffer, referenc
     // just the generic "fetch failed".
     const message = error?.error?.error_summary || formatError(error) || 'Unknown error';
     console.error(
-      `uploadFileToDropbox ERROR: could not upload "${fileName}" for client "${clientName}" — status: ${status} — ${message}`
+      `uploadFileToDropbox ERROR: could not upload "${fileName}" for "${clientFolderSegment}" — status: ${status} — ${message}`
     );
     throw error;
   }

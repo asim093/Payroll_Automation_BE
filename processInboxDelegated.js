@@ -7,7 +7,11 @@ const { processEmail } = require('./services/emailProcessor');
 const EmailLog = require('./models/EmailLog');
 
 
-const processInboxDelegated = async () => {
+// @param {Date|string} [sinceTimestamp] - only messages received on/after
+//   this time are fetched (delta-fetch watermark - see runAllFlows.js).
+//   Omit to fall back to the last 1 hour (used by manual/standalone runs,
+//   e.g. `node processInboxDelegated.js` directly).
+const processInboxDelegated = async (sinceTimestamp) => {
   const mailboxEmail = process.env.DELEGATED_MAILBOX_EMAIL;
   if (!mailboxEmail) {
     throw new Error('DELEGATED_MAILBOX_EMAIL .env mein set nahi hai.');
@@ -15,10 +19,14 @@ const processInboxDelegated = async () => {
 
   const accessToken = await getAccessTokenFromRefreshToken();
 
-  console.log(`Fetching recent unread emails for: ${mailboxEmail} (delegated, "me")...`);
+  console.log(
+    `Fetching emails for: ${mailboxEmail} (delegated, "me") received since ${
+      sinceTimestamp ? new Date(sinceTimestamp).toISOString() : '(last 1 hour, default)'
+    }...`
+  );
 
-  const inboxMessages = await getRecentEmails(undefined, accessToken);
-  const junkMessages = await getRecentEmails(undefined, accessToken, 'JunkEmail');
+  const inboxMessages = await getRecentEmails(undefined, accessToken, undefined, sinceTimestamp);
+  const junkMessages = await getRecentEmails(undefined, accessToken, 'JunkEmail', sinceTimestamp);
 
   const messages = [
     ...inboxMessages.map((message) => ({ ...message, _sourceFolder: 'Inbox' })),
@@ -27,7 +35,7 @@ const processInboxDelegated = async () => {
 
   console.log(`Fetched: ${inboxMessages.length} from Inbox, ${junkMessages.length} from Junk.`);
   if (messages.length === 0) {
-    console.log('No new (unread) emails found.');
+    console.log('No new emails found since last scan.');
   }
 
   let matchedCount = 0;

@@ -31,10 +31,22 @@ const clientSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    // Client-specific value substituted for the "{Client Name}" placeholder
+    // in Settings' shareFilePathTemplate (see utils/pathTemplate.js).
+    // Editable per-client via AddClientModal's Destination Preview, defaults
+    // to the client's name if left blank. Empty/missing on clients created
+    // before this field existed - sharefileService.js falls back to
+    // client.name in that case.
     shareFilePath: {
       type: String,
       trim: true,
     },
+    // Client-specific value substituted for the "{Client Name}" placeholder
+    // in Settings' dropboxPathTemplate (see utils/pathTemplate.js).
+    // Editable per-client via AddClientModal's Destination Preview, defaults
+    // to the client's name if left blank. Empty/missing on clients created
+    // before this field existed - dropboxService.js falls back to
+    // client.name in that case.
     dropboxPath: {
       type: String,
       trim: true,

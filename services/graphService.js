@@ -45,19 +45,30 @@ const mailboxSegment = (mailboxEmail) =>
   mailboxEmail ? `users/${encodeURIComponent(mailboxEmail)}` : 'me';
 
 /**
- * Fetch the most recent, unread emails from a mailbox folder.
+ * Fetch emails received since a given timestamp from a mailbox folder.
  * GET /{users/{mailboxEmail}|me}/messages
- *     ?$top=25&$orderby=receivedDateTime desc&$filter=isRead eq false
+ *     ?$top=50&$orderby=receivedDateTime desc&$filter=receivedDateTime ge {sinceTimestamp}
  * — or, when folderName is given —
  * GET /{users/{mailboxEmail}|me}/mailFolders/{folderName}/messages?...
+ *
+ * Deliberately does NOT filter on isRead — a message a user opened in
+ * Outlook before our scan ran would permanently disappear from an
+ * isRead:false filter and never get processed. Time-based delta-fetching
+ * (this sinceTimestamp) is the replacement: every message received since
+ * the last successful scan is considered, read or not. The messageId-based
+ * duplicate check in EmailLog (see processEmail()) is what keeps this from
+ * reprocessing anything already handled if the same window gets checked
+ * twice (e.g. after a failed scan cycle).
  *
  * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
  * @param {string} [accessToken] - omit to use the app-only token
  * @param {string} [folderName] - omit for the default Inbox behavior
  *   (backward-compatible); pass a Graph well-known folder name to check a
  *   different folder instead, e.g. "JunkEmail" for the Junk Email folder.
+ * @param {Date|string} [sinceTimestamp] - only messages received on/after
+ *   this time are returned. Omit to fall back to the last 1 hour.
  */
-const getRecentEmails = async (mailboxEmail, accessToken, folderName) => {
+const getRecentEmails = async (mailboxEmail, accessToken, folderName, sinceTimestamp) => {
   try {
     const token = await resolveAccessToken(accessToken);
 
@@ -65,10 +76,12 @@ const getRecentEmails = async (mailboxEmail, accessToken, folderName) => {
       ? `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/mailFolders/${encodeURIComponent(folderName)}/messages`
       : `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages`;
 
+    const since = sinceTimestamp ? new Date(sinceTimestamp) : new Date(Date.now() - 60 * 60 * 1000);
+
     const url = new URL(base);
-    url.searchParams.set('$top', '25');
+    url.searchParams.set('$top', '50');
     url.searchParams.set('$orderby', 'receivedDateTime desc');
-    url.searchParams.set('$filter', 'isRead eq false');
+    url.searchParams.set('$filter', `receivedDateTime ge ${since.toISOString()}`);
 
     const response = await fetch(url, {
       method: 'GET',

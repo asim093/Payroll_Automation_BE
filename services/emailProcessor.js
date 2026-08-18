@@ -42,7 +42,8 @@ const saveToDestinations = async (client, fileName, contentBuffer, source) => {
 
   // 1. Try Dropbox first.
   try {
-    const dropboxPath = await uploadFileToDropbox(client.name, fileName, contentBuffer, referenceDate);
+    const dropboxFolderSegment = client.dropboxPath || client.name;
+    const dropboxPath = await uploadFileToDropbox(dropboxFolderSegment, fileName, contentBuffer, referenceDate);
 
     await FileLog.create({
       source,
@@ -258,14 +259,8 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     let emailLog;
 
     try {
-      // No filename passed -> fetchFileFromShareFile() auto-detects the
-      // most recently uploaded file in the client's folder (see
-      // getLatestFileInShareFileFolder() in sharefileService.js). A real
-      // notification email doesn't tell us the filename, so we can't
-      // hardcode one — the folder's newest file is our best signal for
-      // "the file this notification is about".
       const { content: fileContent, fileName: shareFileFileName } = await fetchFileFromShareFile(
-        notificationClient.name
+        notificationClient.shareFilePath || notificationClient.name
       );
 
       let savedAttachments = [];

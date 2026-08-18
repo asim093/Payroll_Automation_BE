@@ -6,7 +6,11 @@ const { processEmail } = require('./services/emailProcessor');
 const EmailLog = require('./models/EmailLog');
 
 
-const processInbox = async () => {
+// @param {Date|string} [sinceTimestamp] - only messages received on/after
+//   this time are fetched (delta-fetch watermark - see runAllFlows.js).
+//   Omit to fall back to the last 1 hour (used by manual/standalone runs,
+//   e.g. `node processInbox.js` directly).
+const processInbox = async (sinceTimestamp) => {
   const mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
   if (!mailboxEmail) {
     throw new Error(
@@ -14,8 +18,12 @@ const processInbox = async () => {
     );
   }
 
-  console.log(`Fetching recent emails from mailbox: ${mailboxEmail}...`);
-  const messages = await getRecentEmails(mailboxEmail);
+  console.log(
+    `Fetching emails from mailbox: ${mailboxEmail} received since ${
+      sinceTimestamp ? new Date(sinceTimestamp).toISOString() : '(last 1 hour, default)'
+    }...`
+  );
+  const messages = await getRecentEmails(mailboxEmail, undefined, undefined, sinceTimestamp);
   console.log(`Fetched ${messages.length} message(s).`);
 
   let matchedCount = 0;

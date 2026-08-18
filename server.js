@@ -8,6 +8,7 @@ const emailLogRoutes = require('./routes/emailLogRoutes');
 const fileLogRoutes = require('./routes/fileLogRoutes');
 const reviewQueueRoutes = require('./routes/reviewQueueRoutes');
 const triggerRoutes = require('./routes/triggerRoutes');
+const settingsRoutes = require('./routes/settingsRoutes');
 
 connectDB();
 
@@ -21,6 +22,7 @@ app.use('/api/email-logs', emailLogRoutes);
 app.use('/api/file-logs', fileLogRoutes);
 app.use('/api/review-queue', reviewQueueRoutes);
 app.use('/api', triggerRoutes);
+app.use('/api/settings', settingsRoutes);
 
 app.get('/', (req, res) => {
   res.send('Payroll Automation API is running');

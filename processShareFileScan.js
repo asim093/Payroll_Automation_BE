@@ -24,7 +24,7 @@ const processShareFileScan = async () => {
 
   for (const file of newFiles) {
     try {
-      const dropboxPath = await uploadFileToDropbox(file.clientName, file.fileName, file.content);
+      const dropboxPath = await uploadFileToDropbox(file.dropboxFolderSegment, file.fileName, file.content);
 
       await FileLog.create({
         source: 'sharefile',
