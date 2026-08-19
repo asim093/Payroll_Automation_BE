@@ -112,7 +112,7 @@ const server = http.createServer(async (req, res) => {
       );
     } else {
       console.error(
-        '\nAccess token mil gaya, lekin cache mein refresh token nahi mila — confirm karein "offline_access" scope grant hui thi.'
+        '\nAccess token received, but no refresh token was found in the cache — confirm the "offline_access" scope was granted.'
       );
     }
   } catch (error) {

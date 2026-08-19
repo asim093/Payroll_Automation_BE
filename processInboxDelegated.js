@@ -11,7 +11,7 @@ const EmailLog = require('./models/EmailLog');
 const processInboxDelegated = async (sinceTimestamp) => {
   const mailboxEmail = process.env.DELEGATED_MAILBOX_EMAIL;
   if (!mailboxEmail) {
-    throw new Error('DELEGATED_MAILBOX_EMAIL .env mein set nahi hai.');
+    throw new Error('DELEGATED_MAILBOX_EMAIL is not set in .env.');
   }
 
   const accessToken = await getAccessTokenFromRefreshToken();

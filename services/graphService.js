@@ -472,6 +472,39 @@ const copyEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail)
   }
 };
 
+/**
+ * Deletes a client's dedicated Outlook mail folder — used when an admin
+ * opts in to folder-cleanup while deleting a client (see
+ * services/clientFolderCleanupService.js). Uses the folder Id cached on
+ * Client.outlookFolderId at setup time (see findOrCreateOutlookFolder
+ * above), so this never has to re-walk the folder path. A folder that's
+ * already gone (404) is NOT an error.
+ *
+ * @param {string} folderId
+ * @param {string} [accessToken] - omit to use the app-only token
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ */
+const deleteMailFolder = async (folderId, accessToken, mailboxEmail) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+    const segment = mailboxSegment(mailboxEmail);
+    const url = `${GRAPH_BASE_URL}/${segment}/mailFolders/${folderId}`;
+
+    const response = await fetchWithRetry(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok && response.status !== 404) {
+      const errorBody = await response.text();
+      throw new Error(`delete mail folder failed (${response.status}): ${errorBody}`);
+    }
+    console.log(`  [OUTLOOK] Deleted mail folder (id ${folderId}).`);
+  } catch (error) {
+    console.error(`deleteMailFolder ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
 module.exports = {
   getAccessToken,
   getRecentEmails,
@@ -479,6 +512,7 @@ module.exports = {
   assignCategory,
   ensureCategoryExists,
   findOrCreateOutlookFolder,
+  deleteMailFolder,
   copyEmailToFolder,
   moveEmailToFolder,
 };

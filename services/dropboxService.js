@@ -170,4 +170,33 @@ const ensureDropboxFolderExists = async (clientFolderSegment) => {
   }
 };
 
-module.exports = { uploadFileToDropbox, ensureDropboxFolderExists, getDropboxAccessToken };
+/**
+ * Deletes a client's Dropbox folder (and everything inside it) — used when
+ * an admin opts in to folder-cleanup while deleting a client (see
+ * services/clientFolderCleanupService.js). A folder that's already gone is
+ * NOT an error — filesDeleteV2() on a missing path returns
+ * "path_lookup/not_found", treated the same as "already deleted".
+ *
+ * @param {string} clientFolderSegment - client.dropboxPath || client.name
+ * @returns {Promise<{deleted: boolean, path: string}>}
+ */
+const deleteDropboxFolder = async (clientFolderSegment) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment);
+
+  try {
+    await dbx.filesDeleteV2({ path: folderPath });
+    console.log(`  [DROPBOX] Deleted folder "${folderPath}".`);
+    return { deleted: true, path: folderPath };
+  } catch (error) {
+    const errorSummary = error?.error?.error_summary || '';
+    if (errorSummary.startsWith('path_lookup/not_found')) {
+      return { deleted: false, path: folderPath };
+    }
+    console.error(`deleteDropboxFolder ERROR (deleting "${folderPath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
+module.exports = { uploadFileToDropbox, ensureDropboxFolderExists, deleteDropboxFolder, getDropboxAccessToken };

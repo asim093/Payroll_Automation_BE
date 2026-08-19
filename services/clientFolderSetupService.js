@@ -7,6 +7,7 @@
  * the returned `warnings` array, persisted onto Client.folderSetupWarnings
  * so it can be surfaced on the Clients page until manually resolved.
  */
+const Client = require('../models/Client');
 const { getSettings } = require('./settingsService');
 const { joinFolderPath } = require('../utils/folderPath');
 const { ensureDropboxFolderExists } = require('./dropboxService');
@@ -18,6 +19,48 @@ const { formatError } = require('../utils/formatError');
 const hasDelegatedConfig = () =>
   Boolean(process.env.DELEGATED_REFRESH_TOKEN && process.env.DELEGATED_CLIENT_ID && process.env.DELEGATED_MAILBOX_EMAIL);
 
+const normalizePathSegment = (value) => String(value || '').trim().toLowerCase();
+
+/**
+ * Two clients pointing at the exact same Dropbox/ShareFile path means their
+ * files land in the same physical folder and get mixed together — this is
+ * never intentional, but nothing else in the create/edit flow would catch
+ * it (ensureXFolderExists() just sees "already exists" and reports no
+ * warning). Checked independently of the create/exists calls below so it
+ * still fires even when the folder itself was created without any error.
+ *
+ * @returns {Promise<string[]>} zero, one, or two warnings (Dropbox/ShareFile)
+ */
+const checkForPathCollisions = async (client) => {
+  const warnings = [];
+  const dropboxSegment = normalizePathSegment(client.dropboxPath || client.name);
+  const shareFileSegment = normalizePathSegment(client.shareFilePath || client.name);
+
+  const otherClients = await Client.find({ _id: { $ne: client._id } })
+    .select('name dropboxPath shareFilePath')
+    .lean();
+
+  const dropboxCollision = otherClients.find(
+    (other) => normalizePathSegment(other.dropboxPath || other.name) === dropboxSegment
+  );
+  if (dropboxCollision) {
+    warnings.push(
+      `Dropbox: this path is already used by client "${dropboxCollision.name}" — files from both clients will land in the same folder.`
+    );
+  }
+
+  const shareFileCollision = otherClients.find(
+    (other) => normalizePathSegment(other.shareFilePath || other.name) === shareFileSegment
+  );
+  if (shareFileCollision) {
+    warnings.push(
+      `ShareFile: this path is already used by client "${shareFileCollision.name}" — files from both clients will land in the same folder.`
+    );
+  }
+
+  return warnings;
+};
+
 /**
  * @param {import('../models/Client')} client - a saved Client document (or
  *   plain object) with name/dropboxPath/shareFilePath already set.
@@ -25,7 +68,7 @@ const hasDelegatedConfig = () =>
  *   checked out (or was created) fine.
  */
 const setupClientFolders = async (client) => {
-  const warnings = [];
+  const warnings = await checkForPathCollisions(client);
   const { dropboxRootPath, shareFileRootPath, outlookRootPath } = await getSettings();
 
   // --- Dropbox ---
@@ -38,7 +81,7 @@ const setupClientFolders = async (client) => {
   } catch (error) {
     const message = formatError(error);
     console.error(`  [CLIENT SETUP] Dropbox folder-create FAILED for "${client.name}": ${message}`);
-    warnings.push(`Dropbox: folder-create nahi ho paya, please manually check karein. (${message})`);
+    warnings.push(`Dropbox: could not create the folder automatically, please check manually. (${message})`);
   }
 
   // --- ShareFile ---
@@ -52,7 +95,7 @@ const setupClientFolders = async (client) => {
   } catch (error) {
     const message = formatError(error);
     console.error(`  [CLIENT SETUP] ShareFile folder-create FAILED for "${client.name}": ${message}`);
-    warnings.push(`ShareFile: folder-create nahi ho paya, please manually check karein. (${message})`);
+    warnings.push(`ShareFile: could not create the folder automatically, please check manually. (${message})`);
   }
 
   // --- Outlook ---
@@ -72,7 +115,7 @@ const setupClientFolders = async (client) => {
     } catch (error) {
       const message = formatError(error);
       console.error(`  [CLIENT SETUP] Outlook mail-folder create FAILED for "${client.name}": ${message}`);
-      warnings.push(`Outlook: mail-folder create nahi ho paya, please manually check karein. (${message})`);
+      warnings.push(`Outlook: could not create the mail folder automatically, please check manually. (${message})`);
     }
   } else {
     console.log('  [CLIENT SETUP] Outlook: delegated flow not configured - skipping mail-folder creation.');

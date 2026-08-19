@@ -606,12 +606,79 @@ const scanShareFileRootForUnmatchedItems = async () => {
   return { scanned: children.length, newOrphans };
 };
 
+/**
+ * Walks to a folder WITHOUT creating any missing segment — returns null if
+ * any part of the path doesn't exist. Used by deleteShareFileFolder() below
+ * so cleanup never accidentally creates the very folder it's trying to
+ * remove.
+ */
+const resolveShareFileFolderId = async (fullPath) => {
+  const segments = fullPath
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const { apiBase, authHeaders, homeId } = await getShareFileContext();
+  let currentId = homeId;
+
+  for (const segment of segments) {
+    const childrenResponse = await fetch(`${apiBase}/Items(${currentId})/Children`, { headers: authHeaders });
+    if (!childrenResponse.ok) {
+      const errorBody = await childrenResponse.text();
+      throw new Error(`Could not list children while walking to "${fullPath}" (${childrenResponse.status}): ${errorBody}`);
+    }
+    const childrenData = await childrenResponse.json();
+    const match = (childrenData.value || []).find(
+      (item) => !isFileItem(item) && (item.Name || '').toLowerCase() === segment.toLowerCase()
+    );
+    if (!match) return null;
+    currentId = match.Id;
+  }
+
+  return currentId;
+};
+
+/**
+ * Deletes a client's ShareFile folder (and everything inside it) — used
+ * when an admin opts in to folder-cleanup while deleting a client (see
+ * services/clientFolderCleanupService.js). A folder that's already gone is
+ * NOT an error.
+ *
+ * @param {string} fullPath - the already-resolved path (root + client segment)
+ * @returns {Promise<{deleted: boolean}>}
+ */
+const deleteShareFileFolder = async (fullPath) => {
+  try {
+    const { apiBase, authHeaders } = await getShareFileContext();
+    const folderId = await resolveShareFileFolderId(fullPath);
+    if (!folderId) {
+      return { deleted: false };
+    }
+
+    const deleteResponse = await fetch(`${apiBase}/Items(${folderId})`, {
+      method: 'DELETE',
+      headers: authHeaders,
+    });
+    if (!deleteResponse.ok && deleteResponse.status !== 404) {
+      const errorBody = await deleteResponse.text();
+      throw new Error(`Could not delete folder "${fullPath}" (${deleteResponse.status}): ${errorBody}`);
+    }
+
+    console.log(`  [SHAREFILE] Deleted folder "${fullPath}".`);
+    return { deleted: true };
+  } catch (error) {
+    console.error(`deleteShareFileFolder ERROR ("${fullPath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
 module.exports = {
   getShareFileAccessToken,
   getLatestFileInShareFileFolder,
   fetchFileFromShareFile,
   scanShareFileForNewFiles,
   ensureShareFileFolderExists,
+  deleteShareFileFolder,
   scanShareFileRootForUnmatchedItems,
   downloadFileContentById,
 };

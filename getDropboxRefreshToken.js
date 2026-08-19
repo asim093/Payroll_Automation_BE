@@ -21,7 +21,7 @@ const APP_KEY = process.env.DROPBOX_APP_KEY;
 const APP_SECRET = process.env.DROPBOX_APP_SECRET;
 
 if (!APP_KEY || !APP_SECRET) {
-  console.error('DROPBOX_APP_KEY / DROPBOX_APP_SECRET .env mein set nahi hain.');
+  console.error('DROPBOX_APP_KEY / DROPBOX_APP_SECRET are not set in .env.');
   process.exit(1);
 }
 
@@ -38,7 +38,7 @@ rl.question('Authorization code paste karein: ', async (rawCode) => {
   const code = rawCode.trim();
 
   if (!code) {
-    console.error('Koi code nahi mila — kuch paste nahi hua.');
+    console.error('No code received — nothing was pasted.');
     process.exit(1);
   }
 
@@ -64,7 +64,7 @@ rl.question('Authorization code paste karein: ', async (rawCode) => {
 
     const data = await response.json();
     if (!data.refresh_token) {
-      console.error('\nResponse mein refresh_token nahi mila:', JSON.stringify(data, null, 2));
+      console.error('\nNo refresh_token found in the response:', JSON.stringify(data, null, 2));
       process.exit(1);
     }
 

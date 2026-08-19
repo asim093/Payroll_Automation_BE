@@ -3,6 +3,7 @@ const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const { setupClientFolders } = require('../services/clientFolderSetupService');
+const { deleteClientFolders } = require('../services/clientFolderCleanupService');
 
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -39,7 +40,7 @@ exports.createClient = async (req, res, next) => {
 
     const duplicate = await findDuplicateByName(name);
     if (duplicate) {
-      return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+      return res.status(409).json({ error: 'A client with this name already exists' });
     }
 
     const client = await Client.create(req.body);
@@ -50,7 +51,7 @@ exports.createClient = async (req, res, next) => {
     res.status(201).json(client);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+      return res.status(409).json({ error: 'A client with this name already exists' });
     }
     next(error);
   }
@@ -218,7 +219,7 @@ exports.updateClient = async (req, res, next) => {
       }
       const duplicate = await findDuplicateByName(req.body.name, req.params.id);
       if (duplicate) {
-        return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+        return res.status(409).json({ error: 'A client with this name already exists' });
       }
     }
 
@@ -246,7 +247,7 @@ exports.updateClient = async (req, res, next) => {
     res.status(200).json(client);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+      return res.status(409).json({ error: 'A client with this name already exists' });
     }
     next(error);
   }
@@ -255,11 +256,23 @@ exports.updateClient = async (req, res, next) => {
 
 exports.deleteClient = async (req, res, next) => {
   try {
-    const client = await Client.findByIdAndDelete(req.params.id);
+    const client = await Client.findById(req.params.id);
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
-    res.status(200).json({ message: 'Client deleted successfully' });
+
+    // Opt-in only (see ClientsPage.jsx's delete dialog) — deleting a
+    // client's record should never silently take its Dropbox/ShareFile/
+    // Outlook folders with it. Best-effort: a folder that couldn't be
+    // removed becomes a warning in the response, never blocks the client
+    // record itself from being deleted.
+    let folderWarnings = [];
+    if (req.query.deleteFolders === 'true') {
+      folderWarnings = await deleteClientFolders(client);
+    }
+
+    await Client.findByIdAndDelete(req.params.id);
+    res.status(200).json({ message: 'Client deleted successfully', folderWarnings });
   } catch (error) {
     next(error);
   }

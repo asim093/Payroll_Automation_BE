@@ -11,7 +11,7 @@ const processInbox = async (sinceTimestamp) => {
   const mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
   if (!mailboxEmail) {
     throw new Error(
-      'TEST_MAILBOX_EMAIL .env mein set nahi hai. Pehle license/mailbox setup complete karein.'
+      'TEST_MAILBOX_EMAIL is not set in .env. Please complete the mailbox setup first.'
     );
   }
 
