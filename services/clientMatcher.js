@@ -1,4 +1,5 @@
 const Client = require('../models/Client');
+const EmailLog = require('../models/EmailLog');
 
 /**
  * Match a client by sender email address.
@@ -49,12 +50,63 @@ const matchClientBySender = async (senderEmail) => {
       return null;
     }
     if (domainMatches.length === 1) {
-      return domainMatches[0];
+      const client = domainMatches[0];
+      // A domain rule matches ANY sender at that domain, including ones
+      // that were never actually meant to be this client - e.g. an
+      // unrelated new company that happens to share the domain. Auto-file
+      // only once this exact address has matched this exact client before
+      // (either from an earlier automatic match, or a manual Review Queue
+      // approval - see resolveOneReviewItem() in reviewQueueController.js,
+      // which sets matchedClientId the same way). A brand-new address is
+      // withheld here and picked back up by
+      // matchClientByDomainPendingReview() below, which routes it to
+      // Review Queue for a one-time manual confirmation instead.
+      const previouslySeen = await EmailLog.exists({
+        sender: normalizedSender,
+        matchedClientId: client._id,
+      });
+      if (previouslySeen) {
+        return client;
+      }
+      return null;
     }
   }
 
   // 3. No match
   return null;
+};
+
+/**
+ * Diagnostic companion to matchClientBySender() — called only after that
+ * function has already returned null, to tell apart "this sender's domain
+ * matches an active client, but this exact address has never been
+ * confirmed before" from a genuinely unknown sender (see emailProcessor.js).
+ * Mirrors the domain-matching half of matchClientBySender() rather than
+ * sharing code with it, same as matchInactiveClientBySender() below - kept
+ * simple and self-contained rather than threading extra state through the
+ * main matching path.
+ *
+ * @returns {Promise<import('../models/Client')|null>} the client this
+ *   sender's domain matches, if it's still pending a first-time approval -
+ *   null otherwise (no domain match, an ambiguous one, or already trusted).
+ */
+const matchClientByDomainPendingReview = async (senderEmail) => {
+  const normalizedSender = (senderEmail || '').trim().toLowerCase();
+  const senderDomain = normalizedSender.split('@')[1] || '';
+  if (!senderDomain) return null;
+
+  const activeClients = await Client.find({ status: 'active' });
+  const domainMatches = activeClients.filter((client) =>
+    (client.matchingRules?.domains || []).some((domain) => domain.toLowerCase() === senderDomain)
+  );
+  // An ambiguous domain match (2+ clients) is a different situation,
+  // already handled generically upstream - only a single, unambiguous
+  // match counts as "pending first-time approval" here.
+  if (domainMatches.length !== 1) return null;
+
+  const client = domainMatches[0];
+  const previouslySeen = await EmailLog.exists({ sender: normalizedSender, matchedClientId: client._id });
+  return previouslySeen ? null : client;
 };
 
 /**
@@ -110,4 +162,9 @@ const matchInactiveClientBySender = async (senderEmail) => {
   return null;
 };
 
-module.exports = { matchClientBySender, matchClientByNotificationPattern, matchInactiveClientBySender };
+module.exports = {
+  matchClientBySender,
+  matchClientByNotificationPattern,
+  matchInactiveClientBySender,
+  matchClientByDomainPendingReview,
+};

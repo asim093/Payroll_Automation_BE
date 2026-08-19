@@ -7,7 +7,7 @@ const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthSer
 const { completeFileProcessing } = require('../services/emailProcessor');
 
 const VALID_TYPES = ['email', 'file'];
-const VALID_REASONS = ['unknown_sender', 'no_match', 'ambiguous', 'client_inactive'];
+const VALID_REASONS = ['unknown_sender', 'no_match', 'ambiguous', 'client_inactive', 'new_sender_domain_match'];
 
 
 exports.createReviewQueueEntry = async (req, res, next) => {
@@ -75,7 +75,10 @@ const attachRelatedData = async (entries) => {
 exports.getAllReviewQueueEntries = async (req, res, next) => {
   try {
     const filter = req.query.all === 'true' ? {} : { resolvedClientId: null };
-    const entries = await ReviewQueue.find(filter).populate('resolvedClientId').lean();
+    const entries = await ReviewQueue.find(filter)
+      .populate('resolvedClientId')
+      .populate('suggestedClientId')
+      .lean();
     const enriched = await attachRelatedData(entries);
     res.status(200).json(enriched);
   } catch (error) {
@@ -86,7 +89,10 @@ exports.getAllReviewQueueEntries = async (req, res, next) => {
 
 exports.getReviewQueueEntryById = async (req, res, next) => {
   try {
-    const entry = await ReviewQueue.findById(req.params.id).populate('resolvedClientId').lean();
+    const entry = await ReviewQueue.findById(req.params.id)
+      .populate('resolvedClientId')
+      .populate('suggestedClientId')
+      .lean();
     if (!entry) {
       return res.status(404).json({ error: 'Review queue entry not found' });
     }

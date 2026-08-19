@@ -5,6 +5,7 @@ const {
   matchClientBySender,
   matchClientByNotificationPattern,
   matchInactiveClientBySender,
+  matchClientByDomainPendingReview,
 } = require('./clientMatcher');
 const { saveAttachmentToClientFolder } = require('./fileStorage');
 const { uploadFileToDropbox } = require('./dropboxService');
@@ -429,12 +430,17 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     return emailLog;
   }
 
-  // 5. No match -> needs_review + ReviewQueue entry. Distinguish "this
-  // sender belongs to a known client that's currently inactive" from a
-  // genuinely unknown sender — different situations, different action for
-  // whoever resolves the queue.
-  const inactiveMatch = await matchInactiveClientBySender(sender);
-  const reason = inactiveMatch ? 'client_inactive' : 'no_match';
+  // 5. No match -> needs_review + ReviewQueue entry. Distinguish three
+  // situations, each with a different action for whoever resolves the
+  // queue: (a) sender's domain matches an active client, but this exact
+  // address has never been confirmed before - see
+  // matchClientByDomainPendingReview()'s own comment for why this isn't
+  // auto-filed; (b) sender belongs to a known client that's currently
+  // inactive; (c) a genuinely unknown sender.
+  const domainPendingMatch = await matchClientByDomainPendingReview(sender);
+  const inactiveMatch = domainPendingMatch ? null : await matchInactiveClientBySender(sender);
+  const suggestedClient = domainPendingMatch || inactiveMatch || null;
+  const reason = domainPendingMatch ? 'new_sender_domain_match' : inactiveMatch ? 'client_inactive' : 'no_match';
 
   const emailLog = await EmailLog.create({
     messageId,
@@ -452,10 +458,13 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     type: 'email',
     referenceId: emailLog._id,
     reason,
+    suggestedClientId: suggestedClient?._id,
   });
 
   console.log(
-    inactiveMatch
+    domainPendingMatch
+      ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches active client "${domainPendingMatch.name}" by domain, but this exact address has never been confirmed before. EmailLog created (status: needs_review) + ReviewQueue entry added (reason: new_sender_domain_match).`
+      : inactiveMatch
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches inactive client "${inactiveMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: client_inactive).`
       : `[NEEDS REVIEW] ${messageId} — sender "${sender}" matched no client. EmailLog created (status: needs_review) + ReviewQueue entry added.`
   );
