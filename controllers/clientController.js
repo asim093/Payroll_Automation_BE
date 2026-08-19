@@ -22,6 +22,36 @@ const findDuplicateByName = async (name, excludeId) => {
 };
 
 
+
+const findMatchingRuleConflict = async (matchingRules, excludeId) => {
+  const emails = (matchingRules?.emailAddresses || []).map((email) => String(email).trim().toLowerCase()).filter(Boolean);
+  const domains = (matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase()).filter(Boolean);
+  if (emails.length === 0 && domains.length === 0) {
+    return null;
+  }
+
+  const query = excludeId ? { _id: { $ne: excludeId } } : {};
+  const otherClients = await Client.find(query).select('name matchingRules').lean();
+
+  for (const other of otherClients) {
+    const otherEmails = (other.matchingRules?.emailAddresses || []).map((email) => String(email).trim().toLowerCase());
+    const otherDomains = (other.matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase());
+
+    const emailConflict = emails.find((email) => otherEmails.includes(email));
+    if (emailConflict) {
+      return `Email address "${emailConflict}" is already used by client "${other.name}"`;
+    }
+
+    const domainConflict = domains.find((domain) => otherDomains.includes(domain));
+    if (domainConflict) {
+      return `Domain "${domainConflict}" is already used by client "${other.name}"`;
+    }
+  }
+
+  return null;
+};
+
+
 exports.createClient = async (req, res, next) => {
   try {
     const { name, matchingRules } = req.body;
@@ -41,6 +71,11 @@ exports.createClient = async (req, res, next) => {
     const duplicate = await findDuplicateByName(name);
     if (duplicate) {
       return res.status(409).json({ error: 'A client with this name already exists' });
+    }
+
+    const ruleConflict = await findMatchingRuleConflict(matchingRules);
+    if (ruleConflict) {
+      return res.status(409).json({ error: ruleConflict });
     }
 
     const client = await Client.create(req.body);
@@ -223,7 +258,14 @@ exports.updateClient = async (req, res, next) => {
       }
     }
 
- 
+    if (req.body.matchingRules !== undefined) {
+      const ruleConflict = await findMatchingRuleConflict(req.body.matchingRules, req.params.id);
+      if (ruleConflict) {
+        return res.status(409).json({ error: ruleConflict });
+      }
+    }
+
+
     const beforeUpdate = await Client.findById(req.params.id);
     if (!beforeUpdate) {
       return res.status(404).json({ error: 'Client not found' });
