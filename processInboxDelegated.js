@@ -22,7 +22,14 @@ const processInboxDelegated = async (sinceTimestamp) => {
     }...`
   );
 
-  const inboxMessages = await getRecentEmails(undefined, accessToken, undefined, sinceTimestamp);
+  // Scoped to Inbox + Junk Email specifically, NOT an unscoped mailbox-wide
+  // fetch - a new/unrecognized sender's email can legitimately land in
+  // Junk, so that still needs checking, but Deleted Items and every other
+  // folder deliberately do not (see getRecentEmails()'s own comment on the
+  // bug this used to cause: a "deleted" test email is usually just
+  // sitting in Deleted Items, not actually gone, and would otherwise keep
+  // getting re-fetched and reprocessed on every scan).
+  const inboxMessages = await getRecentEmails(undefined, accessToken, 'Inbox', sinceTimestamp);
   const junkMessages = await getRecentEmails(undefined, accessToken, 'JunkEmail', sinceTimestamp);
 
   const messages = [

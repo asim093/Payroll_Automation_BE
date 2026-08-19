@@ -98,9 +98,18 @@ const fetchWithRetry = async (url, options, attempt = 0) => {
  *
  * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
  * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [folderName] - omit for the default Inbox behavior
- *   (backward-compatible); pass a Graph well-known folder name to check a
- *   different folder instead, e.g. "JunkEmail" for the Junk Email folder.
+ * @param {string} [folderName] - a Graph well-known folder name (e.g.
+ *   "Inbox", "JunkEmail") to scope the fetch to that one folder. OMITTING
+ *   THIS IS NOT "Inbox only" — it hits GET /messages unscoped, which Graph
+ *   resolves against the ENTIRE mailbox, Deleted Items included. Callers
+ *   that want Inbox behavior must pass "Inbox" explicitly (see
+ *   processInbox.js/processInboxDelegated.js, which fetch "Inbox" and
+ *   "JunkEmail" as two separate scoped calls rather than relying on the
+ *   unscoped default) — an earlier version of this comment claimed omitting
+ *   it defaulted to Inbox, which caused a real bug: a deleted-and-purged-
+ *   from-EmailLog test email that was only soft-deleted in Outlook (still
+ *   sitting in Deleted Items) kept getting re-fetched and reprocessed on
+ *   every scan.
  * @param {Date|string} [sinceTimestamp] - only messages received on/after
  *   this time are returned. Omit to fall back to the last 1 hour.
  */
