@@ -60,16 +60,19 @@ let currentState = {
 
 let lastNotifyAt = 0;
 
-// Fire-and-forget POST to the web service's internal broadcast endpoint.
-// Never awaited by callers, never throws - a slow or unreachable web
-// service must never add latency to actual email/file processing. Silently
-// does nothing if WEB_SERVICE_INTERNAL_URL/INTERNAL_NOTIFY_SECRET aren't
-// configured (e.g. local dev without Phase 9 set up) rather than logging
-// noise on every single scan.
+// POST to the web service's internal broadcast endpoint. Returns the
+// underlying promise (settles on completion, timeout, or network failure -
+// never rejects/throws) so callers that need the notify to actually have
+// landed before moving on can await it - see endActivity() below. Every
+// OTHER caller (startPhase/startItem/completeItem) still fires this without
+// awaiting, exactly as before: a slow/unreachable web service must never
+// add latency to actual email/file processing. Silently does nothing if
+// WEB_SERVICE_INTERNAL_URL/INTERNAL_NOTIFY_SECRET aren't configured (e.g.
+// local dev without Phase 9 set up) rather than logging noise on every scan.
 const sendInternalNotify = (state) => {
   const rawUrl = process.env.WEB_SERVICE_INTERNAL_URL;
   const secret = process.env.INTERNAL_NOTIFY_SECRET;
-  if (!rawUrl || !secret) return;
+  if (!rawUrl || !secret) return Promise.resolve();
 
   // On Render, this comes from a `fromService: {property: hostport}`
   // reference (see render.yaml), which yields a bare "host:port" with no
@@ -81,7 +84,7 @@ const sendInternalNotify = (state) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), NOTIFY_TIMEOUT_MS);
 
-  fetch(`${url.replace(/\/$/, '')}/internal/notify-progress`, {
+  return fetch(`${url.replace(/\/$/, '')}/internal/notify-progress`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': secret },
     body: JSON.stringify(state),
@@ -95,11 +98,13 @@ const sendInternalNotify = (state) => {
 
 // @param force - true for phase transitions (always notify immediately);
 //   false for per-item ticks (throttled - see NOTIFY_THROTTLE_MS above).
+// Returns the notify promise (or undefined if skipped by the throttle) -
+// see sendInternalNotify()'s comment on who actually awaits this.
 const notify = (force) => {
   const now = Date.now();
-  if (!force && now - lastNotifyAt < NOTIFY_THROTTLE_MS) return;
+  if (!force && now - lastNotifyAt < NOTIFY_THROTTLE_MS) return undefined;
   lastNotifyAt = now;
-  sendInternalNotify(currentState);
+  return sendInternalNotify(currentState);
 };
 
 // Called once at the start of each of the 3 flows, with however many items
@@ -145,7 +150,16 @@ const endActivity = async () => {
     currentItemStartedAt: null,
   };
   await safeUpdate({ ...currentState });
-  notify(true);
+  // Unlike every other notify() call (fire-and-forget, by design), THIS one
+  // is awaited: on the cron path (see runScanOnce.js), the process calls
+  // process.exit() shortly after runAllFlows() - and therefore this
+  // function - returns. Firing the notify without waiting for it left the
+  // outbound request racing process.exit(), which can kill it mid-flight -
+  // the dashboard's "Processing Now" card would then never learn the scan
+  // ended, and stay stuck spinning until the next scan or a manual page
+  // refresh. Bounded by NOTIFY_TIMEOUT_MS regardless, so this can never
+  // hang the process.
+  await notify(true);
 };
 
 // Pure helper exported for the internal API layer's own use if ever
