@@ -579,18 +579,37 @@ const scanShareFileRootForUnmatchedItems = async () => {
   // shareFilePath (falling back to client.name) - a client configured with
   // a nested path like "Acme Corp/Payroll Files" is still recognized here
   // by its top-level "Acme Corp" folder, since that's as deep as this
-  // level of the scan goes (the nested part is Phase 6's job, above).
-  const knownFolderNames = new Set(
-    clients.map((client) => (client.shareFilePath || client.name).split('/')[0].trim().toLowerCase())
-  );
+  // level of the scan goes (the nested part is Phase 6's job, above). Maps
+  // to the actual Client too (not just a Set of names) so a stale flag can
+  // be auto-cleared with a real resolvedClientId - see the loop below.
+  const folderNameToClient = new Map();
+  clients.forEach((client) => {
+    const topSegment = (client.shareFilePath || client.name).split('/')[0].trim().toLowerCase();
+    if (!folderNameToClient.has(topSegment)) {
+      folderNameToClient.set(topSegment, client);
+    }
+  });
 
   let newOrphans = 0;
+  let autoResolved = 0;
   for (const item of children) {
     const isFile = isFileItem(item);
     const name = item.Name || item.FileName || '(unnamed)';
+    const matchedClient = !isFile ? folderNameToClient.get(name.trim().toLowerCase()) : undefined;
 
-    if (!isFile && knownFolderNames.has(name.trim().toLowerCase())) {
-      continue; // Known client folder - the regular per-client scan already covers it.
+    if (matchedClient) {
+      // Known client folder - the regular per-client scan already covers it
+      // going forward. If an EARLIER scan already flagged this exact item
+      // as unmatched (e.g. the client didn't exist yet, or its path was
+      // only just pointed here), that record would otherwise sit
+      // "unresolved" forever - nothing else ever revisits it once the item
+      // itself stops being reported as an orphan. Clear it now instead.
+      const result = await UnmatchedShareFileItem.updateOne(
+        { itemId: item.Id, status: 'unresolved' },
+        { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
+      );
+      autoResolved += result.modifiedCount || 0;
+      continue;
     }
 
     const path = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
@@ -603,7 +622,7 @@ const scanShareFileRootForUnmatchedItems = async () => {
     newOrphans += await scanClientPathForMismatches(client, shareFileRootPath, apiBase, authHeaders, homeId);
   }
 
-  return { scanned: children.length, newOrphans };
+  return { scanned: children.length, newOrphans, autoResolved };
 };
 
 /**

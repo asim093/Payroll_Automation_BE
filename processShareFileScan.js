@@ -71,7 +71,7 @@ const processShareFileScan = async () => {
   }
 
 
-  let orphanScan = { scanned: 0, newOrphans: 0 };
+  let orphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
   try {
     orphanScan = await scanShareFileRootForUnmatchedItems();
   } catch (error) {
@@ -83,7 +83,9 @@ const processShareFileScan = async () => {
   console.log(`New files found: ${newFiles.length}`);
   console.log(`Saved to Dropbox: ${saved}`);
   console.log(`Failed (will retry next scan): ${failed}`);
-  console.log(`Root-folder items scanned: ${orphanScan.scanned} (new unmatched: ${orphanScan.newOrphans})`);
+  console.log(
+    `Root-folder items scanned: ${orphanScan.scanned} (new unmatched: ${orphanScan.newOrphans}, auto-resolved: ${orphanScan.autoResolved || 0})`
+  );
 
   return {
     clientsScanned,
@@ -92,6 +94,7 @@ const processShareFileScan = async () => {
     failed,
     unmatchedItemsScanned: orphanScan.scanned,
     newUnmatchedItems: orphanScan.newOrphans,
+    autoResolvedUnmatchedItems: orphanScan.autoResolved || 0,
   };
 };
 
