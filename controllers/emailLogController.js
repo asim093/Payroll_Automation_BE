@@ -1,7 +1,6 @@
 const EmailLog = require('../models/EmailLog');
 
-// @desc    Create a new email log
-// @route   POST /api/email-logs
+
 exports.createEmailLog = async (req, res, next) => {
   try {
     const { messageId, sender } = req.body;
@@ -20,8 +19,7 @@ exports.createEmailLog = async (req, res, next) => {
   }
 };
 
-// @desc    Get all email logs
-// @route   GET /api/email-logs
+
 exports.getAllEmailLogs = async (req, res, next) => {
   try {
     const emailLogs = await EmailLog.find().populate('matchedClientId');
@@ -31,8 +29,7 @@ exports.getAllEmailLogs = async (req, res, next) => {
   }
 };
 
-// @desc    Get single email log by id
-// @route   GET /api/email-logs/:id
+
 exports.getEmailLogById = async (req, res, next) => {
   try {
     const emailLog = await EmailLog.findById(req.params.id).populate('matchedClientId');
@@ -45,8 +42,7 @@ exports.getEmailLogById = async (req, res, next) => {
   }
 };
 
-// @desc    Update an email log
-// @route   PUT /api/email-logs/:id
+
 exports.updateEmailLog = async (req, res, next) => {
   try {
     const emailLog = await EmailLog.findByIdAndUpdate(req.params.id, req.body, {
@@ -62,8 +58,7 @@ exports.updateEmailLog = async (req, res, next) => {
   }
 };
 
-// @desc    Delete an email log
-// @route   DELETE /api/email-logs/:id
+
 exports.deleteEmailLog = async (req, res, next) => {
   try {
     const emailLog = await EmailLog.findByIdAndDelete(req.params.id);

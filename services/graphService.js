@@ -315,16 +315,17 @@ const ensureCategoryExists = async (categoryName, color, accessToken, mailboxEma
 };
 
 /**
- * NOT CURRENTLY USED - boss confirmed emails should stay in original
- * location (Inbox), only file-copies move to destination (Dropbox/local).
- * Kept here in case requirements change.
- *
- * Find (or create) a nested mail folder by path, e.g. "Clients/Test Client
- * One" — walks the path one segment at a time, creating any segment that
+ * Find (or create) a nested mail folder by path, e.g. "Clients/Acme Corp"
+ * — walks the path one segment at a time, creating any segment that
  * doesn't already exist as a child of the previous one, and returns the
  * final (innermost) folder's id.
  *
- * @param {string} folderPath - e.g. "Clients/Test Client One"
+ * Used at client-add/edit time (see services/clientFolderSetupService.js)
+ * to ensure a client has a dedicated mail folder — NOT to move emails into
+ * it; emails still stay in their original location (Inbox) per requirements
+ * (see moveEmailToFolder's own note below, still unused for that reason).
+ *
+ * @param {string} folderPath - e.g. "Clients/Acme Corp"
  * @param {string} [accessToken] - omit to use the app-only token
  * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
  */
@@ -347,7 +348,7 @@ const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) 
         : `${GRAPH_BASE_URL}/${segment}/mailFolders`;
       const listUrl = `${listBase}?$filter=${encodeURIComponent(`displayName eq '${escapedName}'`)}`;
 
-      const listResponse = await fetch(listUrl, {
+      const listResponse = await fetchWithRetry(listUrl, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
       if (!listResponse.ok) {
@@ -362,7 +363,7 @@ const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) 
       }
 
       // Not found under this parent — create it.
-      const createResponse = await fetch(listBase, {
+      const createResponse = await fetchWithRetry(listBase, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ displayName: folderName }),
@@ -373,6 +374,7 @@ const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) 
       }
       const created = await createResponse.json();
       parentId = created.id;
+      console.log(`  [OUTLOOK] Created mail folder "${folderName}" (part of "${folderPath}").`);
     }
 
     return parentId;
@@ -425,6 +427,51 @@ const moveEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail)
   }
 };
 
+/**
+ * PHASE 11 — copies an email into a different mail folder, LEAVING THE
+ * ORIGINAL where it is. Unlike moveEmailToFolder() above (unused, on
+ * purpose - see its own comment), this one IS actively used:
+ * emailProcessor.js's completeFileProcessing() calls this to file a copy of
+ * a matched email into that client's dedicated Outlook folder (Phase 3),
+ * for an organized client-wise view in Outlook itself - the original stays
+ * in Inbox untouched, satisfying the same "emails don't move" requirement
+ * moveEmailToFolder's comment documents, since this genuinely doesn't move
+ * anything.
+ *
+ * POST /{users/{mailboxEmail}|me}/messages/{messageId}/copy  { destinationId }
+ *
+ * @param {string} messageId
+ * @param {string} folderId - Client.outlookFolderId (cached at
+ *   create/edit time by clientFolderSetupService.js)
+ * @param {string} [accessToken] - omit to use the app-only token
+ * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
+ * @returns {Promise<object>} the newly-created copy (has its own, different id)
+ */
+const copyEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+    const segment = mailboxSegment(mailboxEmail);
+
+    const url = `${GRAPH_BASE_URL}/${segment}/messages/${encodeURIComponent(messageId)}/copy`;
+    const response = await fetchWithRetry(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destinationId: folderId }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`copyEmailToFolder ERROR: status ${response.status} - ${errorBody}`);
+      throw new Error(`Graph API error ${response.status}: ${errorBody}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    console.error(`copyEmailToFolder ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
 module.exports = {
   getAccessToken,
   getRecentEmails,
@@ -432,5 +479,6 @@ module.exports = {
   assignCategory,
   ensureCategoryExists,
   findOrCreateOutlookFolder,
+  copyEmailToFolder,
   moveEmailToFolder,
 };

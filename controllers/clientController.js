@@ -1,9 +1,26 @@
 const Client = require('../models/Client');
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
+const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
+const { setupClientFolders } = require('../services/clientFolderSetupService');
 
-// @desc    Create a new client
-// @route   POST /api/clients
+
+const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+
+const findDuplicateByName = async (name, excludeId) => {
+  const trimmedName = String(name).trim();
+  const query = { name: new RegExp(`^${escapeRegExp(trimmedName)}$`, 'i') };
+  if (excludeId) {
+    query._id = { $ne: excludeId };
+  }
+  return Client.findOne(query);
+};
+
+
 exports.createClient = async (req, res, next) => {
   try {
     const { name, matchingRules } = req.body;
@@ -20,15 +37,26 @@ exports.createClient = async (req, res, next) => {
       });
     }
 
+    const duplicate = await findDuplicateByName(name);
+    if (duplicate) {
+      return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+    }
+
     const client = await Client.create(req.body);
+
+    client.folderSetupWarnings = await setupClientFolders(client);
+    await client.save();
+
     res.status(201).json(client);
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+    }
     next(error);
   }
 };
 
-// @desc    Get all clients
-// @route   GET /api/clients
+
 exports.getAllClients = async (req, res, next) => {
   try {
     const clients = await Client.find();
@@ -38,12 +66,7 @@ exports.getAllClients = async (req, res, next) => {
   }
 };
 
-// @desc    Get all clients, each with a `lastActivity` date — the most
-//          recent of either its last matched EmailLog (receivedAt) or its
-//          last FileLog (processedAt). One aggregation query per collection
-//          (grouped by client), not one query per client, so this stays
-//          fast regardless of client count.
-// @route   GET /api/clients/with-last-activity
+
 exports.getClientsWithLastActivity = async (req, res, next) => {
   try {
     const clients = await Client.find().sort({ name: 1 }).lean();
@@ -82,10 +105,7 @@ exports.getClientsWithLastActivity = async (req, res, next) => {
   }
 };
 
-// @desc    Recent activity for a single client — its 5 most-recent
-//          emails/files combined (not 5 of each), newest first. Used by the
-//          Clients page's per-row expand/modal.
-// @route   GET /api/clients/:id/history
+
 exports.getClientHistory = async (req, res, next) => {
   try {
     const client = await Client.findById(req.params.id);
@@ -123,8 +143,60 @@ exports.getClientHistory = async (req, res, next) => {
   }
 };
 
-// @desc    Get single client by id
-// @route   GET /api/clients/:id
+
+exports.getClientProfile = async (req, res, next) => {
+  try {
+    const client = await Client.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    const [emailLogs, fileLogs, unmatchedItems] = await Promise.all([
+      EmailLog.find({ matchedClientId: client._id }).sort({ receivedAt: -1 }).lean(),
+      FileLog.find({ clientId: client._id }).sort({ processedAt: -1 }).lean(),
+      UnmatchedShareFileItem.find({ status: 'unresolved' }).lean(),
+    ]);
+
+    const lastEmailAt = emailLogs[0]?.receivedAt;
+    const lastFileAt = fileLogs[0]?.processedAt;
+    let lastProcessedAt = null;
+    if (lastEmailAt && lastFileAt) {
+      lastProcessedAt = new Date(lastEmailAt) > new Date(lastFileAt) ? lastEmailAt : lastFileAt;
+    } else {
+      lastProcessedAt = lastEmailAt || lastFileAt || null;
+    }
+
+    const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const filesThisWeek = fileLogs.filter((file) => file.processedAt && new Date(file.processedAt) >= oneWeekAgo).length;
+    const emailsThisWeek = emailLogs.filter((email) => email.receivedAt && new Date(email.receivedAt) >= oneWeekAgo).length;
+
+    const clientNorm = normalizeForMatch(client.name);
+    const suggestedUnmatchedItems = clientNorm
+      ? unmatchedItems.filter((item) => {
+          const itemNorm = normalizeForMatch(item.name);
+          return itemNorm && (itemNorm.includes(clientNorm) || clientNorm.includes(itemNorm));
+        })
+      : [];
+
+    res.status(200).json({
+      client,
+      emailLogs,
+      fileLogs,
+      lastProcessedAt,
+      stats: {
+        filesThisWeek,
+        emailsThisWeek,
+        totalFiles: fileLogs.length,
+        totalEmails: emailLogs.length,
+      },
+      suggestedUnmatchedItems,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
 exports.getClientById = async (req, res, next) => {
   try {
     const client = await Client.findById(req.params.id);
@@ -137,25 +209,50 @@ exports.getClientById = async (req, res, next) => {
   }
 };
 
-// @desc    Update a client
-// @route   PUT /api/clients/:id
+
 exports.updateClient = async (req, res, next) => {
   try {
+    if (req.body.name !== undefined) {
+      if (!String(req.body.name).trim()) {
+        return res.status(400).json({ error: 'name is required' });
+      }
+      const duplicate = await findDuplicateByName(req.body.name, req.params.id);
+      if (duplicate) {
+        return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+      }
+    }
+
+ 
+    const beforeUpdate = await Client.findById(req.params.id);
+    if (!beforeUpdate) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
     const client = await Client.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
     });
-    if (!client) {
-      return res.status(404).json({ error: 'Client not found' });
+
+    const pathAffectingFieldsChanged =
+      (req.body.dropboxPath !== undefined && req.body.dropboxPath.trim() !== (beforeUpdate.dropboxPath || '')) ||
+      (req.body.shareFilePath !== undefined && req.body.shareFilePath.trim() !== (beforeUpdate.shareFilePath || '')) ||
+      (req.body.name !== undefined && req.body.name.trim() !== beforeUpdate.name);
+
+    if (pathAffectingFieldsChanged) {
+      client.folderSetupWarnings = await setupClientFolders(client);
+      await client.save();
     }
+
     res.status(200).json(client);
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'Is naam ka client already exist karta hai' });
+    }
     next(error);
   }
 };
 
-// @desc    Delete a client
-// @route   DELETE /api/clients/:id
+
 exports.deleteClient = async (req, res, next) => {
   try {
     const client = await Client.findByIdAndDelete(req.params.id);

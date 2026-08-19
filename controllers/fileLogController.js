@@ -1,7 +1,8 @@
 const FileLog = require('../models/FileLog');
+const { retryFailedFile } = require('../services/fileRetryService');
+const { formatError } = require('../utils/formatError');
 
-// @desc    Create a new file log
-// @route   POST /api/file-logs
+
 exports.createFileLog = async (req, res, next) => {
   try {
     const { source, originalName } = req.body;
@@ -20,8 +21,7 @@ exports.createFileLog = async (req, res, next) => {
   }
 };
 
-// @desc    Get all file logs
-// @route   GET /api/file-logs
+
 exports.getAllFileLogs = async (req, res, next) => {
   try {
     const fileLogs = await FileLog.find().populate('clientId');
@@ -31,8 +31,7 @@ exports.getAllFileLogs = async (req, res, next) => {
   }
 };
 
-// @desc    Get single file log by id
-// @route   GET /api/file-logs/:id
+
 exports.getFileLogById = async (req, res, next) => {
   try {
     const fileLog = await FileLog.findById(req.params.id).populate('clientId');
@@ -45,8 +44,7 @@ exports.getFileLogById = async (req, res, next) => {
   }
 };
 
-// @desc    Update a file log
-// @route   PUT /api/file-logs/:id
+
 exports.updateFileLog = async (req, res, next) => {
   try {
     const fileLog = await FileLog.findByIdAndUpdate(req.params.id, req.body, {
@@ -62,8 +60,28 @@ exports.updateFileLog = async (req, res, next) => {
   }
 };
 
-// @desc    Delete a file log
-// @route   DELETE /api/file-logs/:id
+
+exports.retryFileLog = async (req, res, next) => {
+  try {
+    const fileLog = await FileLog.findById(req.params.id);
+    if (!fileLog) {
+      return res.status(404).json({ error: 'File log not found' });
+    }
+    if (fileLog.status !== 'failed') {
+      return res.status(400).json({ error: 'Only failed files can be retried' });
+    }
+
+    await retryFailedFile(fileLog);
+
+    const updated = await FileLog.findById(fileLog._id).populate('clientId');
+    res.status(200).json(updated);
+  } catch (error) {
+    console.error(`retryFileLog ERROR: ${formatError(error)}`);
+    res.status(502).json({ error: error.message });
+  }
+};
+
+
 exports.deleteFileLog = async (req, res, next) => {
   try {
     const fileLog = await FileLog.findByIdAndDelete(req.params.id);

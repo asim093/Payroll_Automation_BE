@@ -1,11 +1,15 @@
 /**
- * Shared "run all three flows" orchestrator - used by BOTH the cron
- * scheduler (scheduler.js, every 5 min) and the on-demand trigger endpoint
- * (routes/triggerRoutes.js, GET /api/trigger-scan). Keeping this in one
- * place guarantees both callers get the exact same behaviour, in
- * particular: each flow (delegated inbox, app-only inbox, ShareFile scan)
- * has its OWN try/catch, so one flow hanging or failing never blocks or
- * skips the other two.
+ * Shared "run all three flows" orchestrator - used by scheduler.js (an
+ * in-process node-cron loop, every 5 min - suitable for a continuously-
+ * running host) and by runScanOnce.js (a single-shot entry point for
+ * Render's native Cron Job service, which spins up a fresh container per
+ * schedule instead of staying resident - see that file's own comment).
+ * Keeping this in one place guarantees both callers get the exact same
+ * behaviour, in particular: each flow (delegated inbox, app-only inbox,
+ * ShareFile scan) has its OWN try/catch, so one flow hanging or failing
+ * never blocks or skips the other two - and the isEmailScanRunning DB lock
+ * (below) protects against either caller's runs overlapping with each
+ * other, not just against itself.
  *
  * After all three flows finish (success or failure), the result is
  * persisted to the single SystemStatus document so it can be checked later
@@ -15,6 +19,7 @@
 const { processInboxDelegated } = require('../processInboxDelegated');
 const { processInbox } = require('../processInbox');
 const { processShareFileScan } = require('../processShareFileScan');
+const { endActivity } = require('./scanActivityService');
 const SystemStatus = require('../models/SystemStatus');
 
 const runDelegatedFlow = async (sinceTimestamp) => {
@@ -204,6 +209,12 @@ const runAllFlows = async () => {
     } catch (error) {
       console.error('[RUN-ALL-FLOWS] Failed to release scan lock:', error.message);
     }
+
+    // Clear the live processing-status panel (see scanActivityService.js)
+    // ONCE, after all 3 flows are done — not after each individual flow —
+    // so the dashboard doesn't flicker to "idle" between phases. Already
+    // internally error-safe (see safeUpdate() there), nothing to catch here.
+    await endActivity();
   }
 };
 

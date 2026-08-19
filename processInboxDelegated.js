@@ -4,13 +4,10 @@ const connectDB = require('./config/db');
 const { getRecentEmails, getEmailAttachments } = require('./services/graphService');
 const { getAccessTokenFromRefreshToken } = require('./services/delegatedAuthService');
 const { processEmail } = require('./services/emailProcessor');
+const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
 const EmailLog = require('./models/EmailLog');
 
 
-// @param {Date|string} [sinceTimestamp] - only messages received on/after
-//   this time are fetched (delta-fetch watermark - see runAllFlows.js).
-//   Omit to fall back to the last 1 hour (used by manual/standalone runs,
-//   e.g. `node processInboxDelegated.js` directly).
 const processInboxDelegated = async (sinceTimestamp) => {
   const mailboxEmail = process.env.DELEGATED_MAILBOX_EMAIL;
   if (!mailboxEmail) {
@@ -43,8 +40,11 @@ const processInboxDelegated = async (sinceTimestamp) => {
   let duplicateCount = 0;
   let errorCount = 0;
 
+  await startPhase('Delegated Inbox Scan (Inbox + Junk)', messages.length);
+
   for (const message of messages) {
     console.log(`\n[${message._sourceFolder}] "${message.subject || '(no subject)'}"`);
+    await startItem(message.subject || '(no subject)');
 
     try {
     
@@ -85,6 +85,8 @@ const processInboxDelegated = async (sinceTimestamp) => {
       errorCount++;
       console.error(`  ERROR processing message from ${message._sourceFolder}: ${error.message}`);
     }
+
+    await completeItem();
   }
 
   const summary = {

@@ -2,7 +2,7 @@ const { Dropbox } = require('dropbox');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
-const { substituteTemplate } = require('../utils/pathTemplate');
+const { joinFolderPath } = require('../utils/folderPath');
 
 // Same sanitization approach as fileStorage.js — client/file names can
 // contain characters that aren't safe in a Dropbox path.
@@ -56,12 +56,12 @@ const getDropboxAccessToken = async () => {
 };
 
 /**
- * Upload a file to Dropbox. The destination FOLDER comes from Settings'
- * dropboxPathTemplate (one free-text string like
- * "WOTC/{Client Name}/Payroll Files", admin-editable in full via
- * PUT /api/settings — see settingsService.js) with the literal
- * "{Client Name}" placeholder substituted for clientFolderSegment (see
- * utils/pathTemplate.js). The timestamp prefix (see generateUniqueFilename)
+ * Upload a file to Dropbox. The destination FOLDER is Settings'
+ * dropboxRootPath (a free-text root path, admin-editable via
+ * PUT /api/settings — see settingsService.js) joined with clientFolderSegment
+ * (see utils/folderPath.js's joinFolderPath()) — e.g. root "WOTC" + client
+ * path "Acme Corp/Payroll Files" -> "WOTC/Acme Corp/Payroll Files". The
+ * timestamp prefix (see generateUniqueFilename)
  * stops two attachments with the same original name from overwriting each
  * other — without it, "overwrite" mode below would silently replace an
  * earlier file that happened to share a name. Returns the uploaded file's
@@ -78,20 +78,27 @@ const getDropboxAccessToken = async () => {
  *   destinations (e.g. local disk) of this same attachment, so both end up
  *   with an identical unique filename.
  */
+// Shared by uploadFileToDropbox() and ensureDropboxFolderExists() so both
+// always resolve a client's folder to the exact same path.
+const resolveDropboxFolderPath = async (clientFolderSegment) => {
+  const { dropboxRootPath } = await getSettings();
+  const resolvedFolder = joinFolderPath(dropboxRootPath, clientFolderSegment);
+  // Split on "/" first (the resolved path's own directory separators), THEN
+  // sanitize each individual segment - sanitizeForPath also strips "/" so
+  // running it on the whole resolved string first would collapse the
+  // intentional folder structure into one flat name.
+  const folderSegments = resolvedFolder.split('/').map(sanitizeForPath).filter(Boolean);
+  return `/${folderSegments.join('/')}`;
+};
+
 const uploadFileToDropbox = async (clientFolderSegment, fileName, contentBuffer, referenceDate) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = new Dropbox({ accessToken, fetch });
-  const { dropboxPathTemplate } = await getSettings();
 
-  const resolvedFolder = substituteTemplate(dropboxPathTemplate, clientFolderSegment);
-  // Split on "/" first (the template's own directory separators), THEN
-  // sanitize each individual segment - sanitizeForPath also strips "/" so
-  // running it on the whole resolved string first would collapse the
-  // template's intentional folder structure into one flat name.
-  const folderSegments = resolvedFolder.split('/').map(sanitizeForPath).filter(Boolean);
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment);
   const uniqueName = generateUniqueFilename(fileName, referenceDate);
   const safeFileName = sanitizeForPath(uniqueName);
-  const dropboxPath = `/${[...folderSegments, safeFileName].join('/')}`;
+  const dropboxPath = `${folderPath}/${safeFileName}`;
 
   try {
     const response = await dbx.filesUpload({
@@ -114,4 +121,53 @@ const uploadFileToDropbox = async (clientFolderSegment, fileName, contentBuffer,
   }
 };
 
-module.exports = { uploadFileToDropbox, getDropboxAccessToken };
+/**
+ * Checks whether a client's Dropbox folder already exists, creating it
+ * (empty) if it doesn't. Used at client-add/edit time (see
+ * services/clientFolderSetupService.js) — NOT called on every upload, since
+ * filesUpload() already auto-creates any missing intermediate folders on
+ * its own (confirmed Dropbox API behaviour), so this is purely for the
+ * "give the admin visible confirmation the folder is ready" requirement.
+ *
+ * Verified against the real API (not guessed): filesGetMetadata() on a
+ * missing path returns HTTP 409 with error_summary starting
+ * "path/not_found"; filesCreateFolderV2() on a path that already exists (a
+ * check-then-create race) returns "path/conflict" — both are handled
+ * explicitly below, anything else is a real error and gets re-thrown.
+ *
+ * @param {string} clientFolderSegment - client.dropboxPath || client.name
+ * @returns {Promise<{created: boolean, path: string}>}
+ */
+const ensureDropboxFolderExists = async (clientFolderSegment) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment);
+
+  try {
+    await dbx.filesGetMetadata({ path: folderPath });
+    return { created: false, path: folderPath };
+  } catch (error) {
+    const errorSummary = error?.error?.error_summary || '';
+    if (!errorSummary.startsWith('path/not_found')) {
+      console.error(`ensureDropboxFolderExists ERROR (checking "${folderPath}"): ${formatError(error)}`);
+      throw error;
+    }
+  }
+
+  try {
+    await dbx.filesCreateFolderV2({ path: folderPath });
+    console.log(`  [DROPBOX] Created folder "${folderPath}".`);
+    return { created: true, path: folderPath };
+  } catch (error) {
+    const errorSummary = error?.error?.error_summary || '';
+    if (errorSummary.startsWith('path/conflict')) {
+      // Created by something else between our check and this call - fine,
+      // it exists now either way.
+      return { created: false, path: folderPath };
+    }
+    console.error(`ensureDropboxFolderExists ERROR (creating "${folderPath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
+module.exports = { uploadFileToDropbox, ensureDropboxFolderExists, getDropboxAccessToken };

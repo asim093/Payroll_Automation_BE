@@ -1,22 +1,33 @@
 const mongoose = require('mongoose');
 
+// Root/starting-point path for each destination — admin-editable via the
+// Settings page's "Folder Structure" section. This is where every client's
+// folder lives UNDER (e.g. dropboxRootPath "WOTC" + a client's own
+// dropboxPath "Acme Corp/Payroll Files" -> "WOTC/Acme Corp/Payroll Files",
+// joined by utils/folderPath.js's joinFolderPath()).
+//
+// Unlike the old *PathTemplate fields these replace, there is no
+// "{Client Name}" placeholder here - the client's own dropboxPath/
+// shareFilePath (see models/Client.js) is now the FULL remaining path,
+// typed entirely by whoever adds the client, not a single segment swapped
+// into a fixed template. The root path itself stays freely editable here
+// exactly like before.
 const settingsSchema = new mongoose.Schema(
   {
-    dropboxPathTemplate: {
+    dropboxRootPath: {
       type: String,
       trim: true,
-      default: 'WOTC/{Client Name}',
+      default: 'WOTC',
     },
-    shareFilePathTemplate: {
+    shareFileRootPath: {
       type: String,
       trim: true,
-      default: 'Clients/{Client Name}',
+      default: 'Clients',
     },
-    
-    outlookPathTemplate: {
+    outlookRootPath: {
       type: String,
       trim: true,
-      default: 'Clients/{Client Name}',
+      default: 'Clients',
     },
   },
   { timestamps: true }

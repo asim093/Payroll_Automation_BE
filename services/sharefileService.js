@@ -5,9 +5,10 @@
  */
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
+const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
-const { substituteTemplate } = require('../utils/pathTemplate');
+const { joinFolderPath } = require('../utils/folderPath');
 
 /**
  * Authenticate with ShareFile via the OAuth2 password grant flow.
@@ -109,13 +110,81 @@ const isFileItem = (item) =>
   item['odata.type'] ? item['odata.type'].includes('.File') : typeof item.Id === 'string' && item.Id.startsWith('fi');
 
 /**
+ * Checks whether a client's ShareFile folder already exists, creating any
+ * missing segment (walking one level at a time from the account's home
+ * folder) if it doesn't. Used at client-add/edit time (see
+ * services/clientFolderSetupService.js).
+ *
+ * CAPABILITY CONFIRMED LIVE (not assumed): tested POST
+ * Items({parentId})/Folder against the real ShareFile trial account this
+ * project uses - it returned HTTP 200 with "CanAddFolder": true in the
+ * created item's Info, so folder-creation IS available on this account/API
+ * tier. If a real account without that permission gets a 403 here, this
+ * throws with ShareFile's own error body rather than silently pretending to
+ * succeed - callers (clientFolderSetupService.js) turn that into a visible
+ * "can't auto-create, do it manually" warning instead of guessing.
+ *
+ * @param {string} fullPath - the already-resolved path, e.g.
+ *   "Clients/Acme Corp/Payroll Files" (root path + client's own path, see
+ *   utils/folderPath.js's joinFolderPath()).
+ * @returns {Promise<{created: boolean, folderId: string}>}
+ */
+const ensureShareFileFolderExists = async (fullPath) => {
+  const segments = fullPath
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  try {
+    const { apiBase, authHeaders, homeId } = await getShareFileContext();
+    let currentId = homeId;
+    let anyCreated = false;
+
+    for (const segment of segments) {
+      const childrenResponse = await fetch(`${apiBase}/Items(${currentId})/Children`, { headers: authHeaders });
+      if (!childrenResponse.ok) {
+        const errorBody = await childrenResponse.text();
+        throw new Error(`Could not list children while walking to "${fullPath}" (${childrenResponse.status}): ${errorBody}`);
+      }
+      const childrenData = await childrenResponse.json();
+      const match = (childrenData.value || []).find(
+        (item) => !isFileItem(item) && (item.Name || '').toLowerCase() === segment.toLowerCase()
+      );
+
+      if (match) {
+        currentId = match.Id;
+        continue;
+      }
+
+      const createResponse = await fetch(`${apiBase}/Items(${currentId})/Folder`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Name: segment }),
+      });
+      if (!createResponse.ok) {
+        const errorBody = await createResponse.text();
+        throw new Error(`Could not create folder "${segment}" under "${fullPath}" (${createResponse.status}): ${errorBody}`);
+      }
+      const created = await createResponse.json();
+      currentId = created.Id;
+      anyCreated = true;
+      console.log(`  [SHAREFILE] Created folder segment "${segment}" (part of "${fullPath}").`);
+    }
+
+    return { created: anyCreated, folderId: currentId };
+  } catch (error) {
+    console.error(`ensureShareFileFolderExists ERROR ("${fullPath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
+/**
  * Lists every file (not subfolders) directly inside the folder resolved
- * from Settings' shareFilePathTemplate (one free-text string like
- * "Clients/{Client Name}", admin-editable in full via PUT /api/settings)
- * with "{Client Name}" substituted for clientFolderSegment (see
- * utils/pathTemplate.js). Throws if the folder doesn't exist — callers
- * that want to treat a missing folder as "just no files yet" should catch
- * that themselves.
+ * from Settings' shareFileRootPath (a free-text root path, admin-editable
+ * via PUT /api/settings) joined with clientFolderSegment (see
+ * utils/folderPath.js's joinFolderPath()). Throws if the folder doesn't
+ * exist — callers that want to treat a missing folder as "just no files
+ * yet" should catch that themselves.
  *
  * @param {string} clientFolderSegment - the client-specific part of the
  *   path. Callers pass client.shareFilePath if set, falling back to
@@ -123,8 +192,8 @@ const isFileItem = (item) =>
  *   Client model.
  */
 const listFilesInShareFileFolder = async (clientFolderSegment) => {
-  const { shareFilePathTemplate } = await getSettings();
-  const folderPath = substituteTemplate(shareFilePathTemplate, clientFolderSegment);
+  const { shareFileRootPath } = await getSettings();
+  const folderPath = joinFolderPath(shareFileRootPath, clientFolderSegment);
 
   try {
     const { apiBase, authHeaders, homeId } = await getShareFileContext();
@@ -190,7 +259,7 @@ const downloadFileContentById = async (fileId) => {
 
 /**
  * Finds the most recently uploaded file inside the folder resolved from
- * Settings' shareFilePathTemplate for clientFolderSegment. Returns
+ * Settings' shareFileRootPath for clientFolderSegment. Returns
  * { fileName, fileId, uploadedAt }. Throws a clear error if the folder
  * doesn't exist or has no files in it.
  */
@@ -221,7 +290,7 @@ const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
 };
 
 /**
- * Fetch a file from ShareFile at {resolved shareFilePathTemplate}/{fileName}
+ * Fetch a file from ShareFile at {resolved shareFileRootPath}/{fileName}
  * — or, if fileName is omitted, auto-detects and downloads the most
  * recently uploaded file in that folder instead (see
  * getLatestFileInShareFileFolder()).
@@ -250,8 +319,8 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
       // Explicit filename given (e.g. for testing) — look it up by path.
       resolvedFileName = fileName;
       const { apiBase, authHeaders, homeId } = await getShareFileContext();
-      const { shareFilePathTemplate } = await getSettings();
-      const itemPath = `${substituteTemplate(shareFilePathTemplate, clientFolderSegment)}/${fileName}`;
+      const { shareFileRootPath } = await getSettings();
+      const itemPath = `${joinFolderPath(shareFileRootPath, clientFolderSegment)}/${fileName}`;
       const byPathUrl = `${apiBase}/Items(${homeId})/ByPath?path=${encodeURIComponent(itemPath)}`;
       const itemResponse = await fetch(byPathUrl, { headers: authHeaders });
       if (!itemResponse.ok) {
@@ -338,9 +407,211 @@ const scanShareFileForNewFiles = async () => {
   return newFiles;
 };
 
+// Shared by both the root-level scan and the per-client mismatch-walk below
+// — upserts one unmatched item: creates it if genuinely new, refreshes
+// lastSeenAt if it's already tracked and still unresolved, and leaves
+// resolved/dismissed ones alone (repeat scans must never un-resolve
+// something an admin already handled).
+const recordUnmatchedItem = async (item, path) => {
+  const isFile = isFileItem(item);
+  const existing = await UnmatchedShareFileItem.findOne({ itemId: item.Id });
+  if (existing) {
+    if (existing.status === 'unresolved') {
+      existing.lastSeenAt = new Date();
+      await existing.save();
+    }
+    return false;
+  }
+
+  await UnmatchedShareFileItem.create({
+    itemId: item.Id,
+    itemType: isFile ? 'file' : 'folder',
+    name: item.Name || item.FileName || '(unnamed)',
+    path,
+    discoveredAt: new Date(),
+    lastSeenAt: new Date(),
+    status: 'unresolved',
+  });
+  console.log(`  [SHAREFILE ORPHAN SCAN] New unmatched ${isFile ? 'file' : 'folder'}: "${path}"`);
+  return true;
+};
+
+const listChildren = async (folderId, apiBase, authHeaders) => {
+  const response = await fetch(`${apiBase}/Items(${folderId})/Children`, { headers: authHeaders });
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Could not list children of folder ${folderId} (${response.status}): ${errorBody}`);
+  }
+  const data = await response.json();
+  return data.value || [];
+};
+
+// PHASE 6 — extends the root-level scan below to also catch a file/folder
+// sitting INSIDE a KNOWN client's top-level ShareFile folder but OUTSIDE
+// the exact nested path that client is actually configured to use. E.g.
+// client "Acme Corp" has shareFilePath "Acme Corp/Payroll Files" — the
+// regular per-client scan (listFilesInShareFileFolder) only ever reads
+// directly inside ".../Payroll Files", so a file sitting loose in
+// ".../Acme Corp/" itself, or in some other sibling subfolder, would
+// otherwise never be looked at by anything. Only relevant for clients whose
+// configured path has 2+ segments — a single-segment client's whole
+// top-level folder already IS what the per-client scan reads.
+//
+// Walks down through each nested-path client's OWN expected chain one
+// level at a time, flagging siblings (anything at that level that ISN'T
+// the next expected segment) at every level - stops descending once the
+// expected chain breaks (that "folder doesn't exist yet" case is already
+// surfaced separately by the per-client scan's own try/catch).
+const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, authHeaders, homeId) => {
+  const expectedSegments = (client.shareFilePath || client.name)
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (expectedSegments.length < 2) return 0; // Nothing nested to check.
+
+  // Resolve the ROOT path's own folder Id first (e.g. "Clients") — without
+  // this, the walk below would start listing HOME's direct children
+  // instead of the root folder's, never find the client's top-level
+  // segment there, and silently return 0 every time.
+  let currentId = homeId;
+  let currentPath = '';
+  if (shareFileRootPath) {
+    try {
+      const rootResponse = await fetch(`${apiBase}/Items(${homeId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`, {
+        headers: authHeaders,
+      });
+      if (!rootResponse.ok) return 0; // Root path doesn't exist - nothing to walk.
+      const rootFolder = await rootResponse.json();
+      currentId = rootFolder.Id;
+      currentPath = shareFileRootPath;
+    } catch (error) {
+      console.warn(`  [SHAREFILE PATH-MISMATCH SCAN] Could not resolve root path "${shareFileRootPath}" - ${formatError(error)}`);
+      return 0;
+    }
+  }
+
+  let newOrphans = 0;
+
+  for (let level = 0; level < expectedSegments.length; level += 1) {
+    const expectedName = expectedSegments[level];
+    let children;
+    try {
+      children = await listChildren(currentId, apiBase, authHeaders);
+    } catch (error) {
+      console.warn(`  [SHAREFILE PATH-MISMATCH SCAN] Could not list "${currentPath}" for "${client.name}" - ${formatError(error)}`);
+      return newOrphans;
+    }
+
+    // Level 0 is the client's own top-level folder - its siblings (other
+    // clients' folders, other unrelated folders) are the root-scan's job,
+    // not this function's. From level 1 onward, everything in this folder
+    // that ISN'T the next expected segment is a genuine mismatch: it's
+    // physically inside this client's own folder tree, yet outside the
+    // path the system actually reads from.
+    if (level > 0) {
+      for (const child of children) {
+        const name = child.Name || child.FileName || '(unnamed)';
+        if (!isFileItem(child) && name.trim().toLowerCase() === expectedName.trim().toLowerCase()) {
+          continue; // The recognized branch - handled by continuing the walk below.
+        }
+        const created = await recordUnmatchedItem(child, `${currentPath}/${name}`);
+        if (created) newOrphans++;
+      }
+    }
+
+    const match = children.find(
+      (child) => !isFileItem(child) && (child.Name || '').trim().toLowerCase() === expectedName.trim().toLowerCase()
+    );
+    if (!match) return newOrphans; // Expected chain breaks here - nothing deeper to check.
+
+    currentId = match.Id;
+    currentPath = `${currentPath}/${expectedName}`;
+  }
+
+  return newOrphans;
+};
+
+/**
+ * PHASE 5 (+ PHASE 6) — master-folder-scan: lists the DIRECT children of the
+ * ShareFile account's root path (Settings' shareFileRootPath) itself,
+ * rather than any specific client's path — this is what catches things the
+ * normal per-client scan (scanShareFileForNewFiles(), above) would never
+ * even look at, since that one only ever checks paths clients already have
+ * on file. Then, for every client whose configured path is nested (2+
+ * segments), also walks that client's OWN folder chain looking for
+ * sibling content outside the exact expected path (see
+ * scanClientPathForMismatches() above — this is the Phase 6 extension).
+ *
+ * Anything found gets tracked in the UnmatchedShareFileItem collection
+ * (repeat scans refresh lastSeenAt instead of duplicating) so it can be
+ * manually resolved from the Review Queue. Deliberately bounded (root level
+ * + one walk per nested-path client, not an unbounded recursive crawl) so
+ * this stays cheap enough to run every regular scan cycle (see
+ * processShareFileScan.js).
+ *
+ * @returns {Promise<{scanned: number, newOrphans: number}>}
+ */
+const scanShareFileRootForUnmatchedItems = async () => {
+  const { shareFileRootPath } = await getSettings();
+  const { apiBase, authHeaders, homeId } = await getShareFileContext();
+
+  let rootId = homeId;
+  if (shareFileRootPath) {
+    const rootResponse = await fetch(`${apiBase}/Items(${homeId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`, {
+      headers: authHeaders,
+    });
+    if (!rootResponse.ok) {
+      // Root folder doesn't exist yet - nothing to scan (not an error; a
+      // brand-new/empty ShareFile setup legitimately has no root folder yet).
+      console.log(`  [SHAREFILE ORPHAN SCAN] Root path "${shareFileRootPath}" not found - skipping.`);
+      return { scanned: 0, newOrphans: 0 };
+    }
+    const rootFolder = await rootResponse.json();
+    rootId = rootFolder.Id;
+  }
+
+  const children = await listChildren(rootId, apiBase, authHeaders);
+
+  const clients = await Client.find();
+
+  // Known top-level folder names = the FIRST path segment of every client's
+  // shareFilePath (falling back to client.name) - a client configured with
+  // a nested path like "Acme Corp/Payroll Files" is still recognized here
+  // by its top-level "Acme Corp" folder, since that's as deep as this
+  // level of the scan goes (the nested part is Phase 6's job, above).
+  const knownFolderNames = new Set(
+    clients.map((client) => (client.shareFilePath || client.name).split('/')[0].trim().toLowerCase())
+  );
+
+  let newOrphans = 0;
+  for (const item of children) {
+    const isFile = isFileItem(item);
+    const name = item.Name || item.FileName || '(unnamed)';
+
+    if (!isFile && knownFolderNames.has(name.trim().toLowerCase())) {
+      continue; // Known client folder - the regular per-client scan already covers it.
+    }
+
+    const path = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
+    const created = await recordUnmatchedItem(item, path);
+    if (created) newOrphans++;
+  }
+
+  // PHASE 6 — nested-path mismatch check, one client at a time.
+  for (const client of clients) {
+    newOrphans += await scanClientPathForMismatches(client, shareFileRootPath, apiBase, authHeaders, homeId);
+  }
+
+  return { scanned: children.length, newOrphans };
+};
+
 module.exports = {
   getShareFileAccessToken,
   getLatestFileInShareFileFolder,
   fetchFileFromShareFile,
   scanShareFileForNewFiles,
+  ensureShareFileFolderExists,
+  scanShareFileRootForUnmatchedItems,
+  downloadFileContentById,
 };

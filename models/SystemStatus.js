@@ -1,11 +1,11 @@
 const mongoose = require('mongoose');
 
 // Single-document collection: tracks only the MOST RECENT run of
-// runAllFlows() (whether triggered by the cron scheduler or by the
-// on-demand /api/trigger-scan endpoint). We don't need a full run-history
-// log here — just "what happened last time" for the dashboard / manual
-// checks — so this is always upserted onto one document rather than
-// growing a new row per run.
+// runAllFlows() (whether run by scheduler.js's in-process cron loop, or by
+// runScanOnce.js's single-shot entry point for Render's native Cron Job
+// service). We don't need a full run-history log here — just "what
+// happened last time" for the dashboard / manual checks — so this is
+// always upserted onto one document rather than growing a new row per run.
 const systemStatusSchema = new mongoose.Schema(
   {
     lastRunAt: {

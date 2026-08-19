@@ -22,6 +22,17 @@ const fileLogSchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
+    // Graph messageId of the source email, set when source === 'outlook'.
+    // The attachment's actual bytes are never persisted anywhere once a
+    // save fails (see emailProcessor.js's saveToDestinations()) - this is
+    // what lets a failed file be RETRIED later: services/
+    // fileRetryService.js uses it to re-fetch the same attachment from
+    // Outlook by name. Unset on FileLogs created before this field existed.
+    sourceMessageId: {
+      type: String,
+      trim: true,
+      index: true,
+    },
     clientId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Client',

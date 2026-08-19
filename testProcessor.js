@@ -10,8 +10,7 @@ const EmailLog = require('./models/EmailLog');
 const ReviewQueue = require('./models/ReviewQueue');
 const FileLog = require('./models/FileLog');
 
-// Lists backend/storage/{clientFolder}/{files...} so we can print exactly
-// what landed on disk.
+
 function listStorageContents() {
   if (!fs.existsSync(STORAGE_ROOT)) return {};
   const contents = {};
@@ -30,8 +29,7 @@ const runTest = async () => {
   try {
     await connectDB();
 
-    // Clear previous test data (DB + disk) so this script gives the same
-    // result on every run.
+    
     await EmailLog.deleteMany({});
     await ReviewQueue.deleteMany({});
     await FileLog.deleteMany({});
@@ -40,7 +38,6 @@ const runTest = async () => {
 
     console.log(`Processing ${mockEmails.length} mock emails (sequentially)...\n`);
 
-    // Sequential, order-preserving — for...of with await (not Promise.all).
     for (const email of mockEmails) {
       await processEmail(email);
     }

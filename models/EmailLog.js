@@ -41,6 +41,18 @@ const emailLogSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // PHASE 11 — true when a copy of this email was successfully filed
+    // into the matched client's dedicated Outlook mail folder (see
+    // emailProcessor.js's completeFileProcessing() / graphService.js's
+    // copyEmailToFolder()). False for needs_review emails (no client yet),
+    // for emails with no successfully-saved attachments (nothing to
+    // "back up" this way), or if the client has no outlookFolderId on
+    // file / the copy call itself failed - never blocks the rest of
+    // processing either way.
+    outlookCopySaved: {
+      type: Boolean,
+      default: false,
+    },
     attachments: {
       type: [attachmentSchema],
       default: [],

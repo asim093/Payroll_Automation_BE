@@ -1,0 +1,135 @@
+# Render Blueprint — see https://render.com/docs/blueprint-spec
+#
+# Lives at the ROOT of this (backend-only) repo, since Render Blueprints
+# read render.yaml from the repo root by default — no rootDir needed here
+# (unlike an earlier draft of this file, back when backend/frontend were
+# planned to live in one combined repo).
+#
+# Two services share this same codebase/env-vars but run fundamentally
+# differently:
+#   - payroll-automation-backend (web): the Express API, stays running
+#     continuously to serve the dashboard.
+#   - payroll-automation-scan (cron): Render spins up a FRESH CONTAINER on
+#     the schedule below, runs runScanOnce.js ONCE, then shuts the
+#     container down — replaces the external cron-job.org pinger that used
+#     to hit GET /api/trigger-scan on a schedule.
+#
+# The cron service can't hold a WebSocket connection open to push dashboard
+# updates directly (it's a separate, short-lived container - see the
+# architecture note in services/scanActivityService.js), so it instead
+# POSTs progress-ticks to the web service's internal endpoint, which then
+# broadcasts them. WEB_SERVICE_INTERNAL_URL below is resolved automatically
+# via `fromService`/`hostport` — Render's PRIVATE network address for the
+# web service (not its public URL), so this traffic never leaves Render's
+# internal network. INTERNAL_NOTIFY_SECRET must be set on BOTH services to
+# the exact same value (Render won't auto-sync a `sync: false` secret
+# across services — set it once on each in the dashboard).
+#
+# Every secret below is `sync: false` — Render prompts for each one in its
+# dashboard on first deploy (or paste them in later under each service's
+# Environment tab). Nothing sensitive lives in this file.
+
+services:
+  - type: web
+    name: payroll-automation-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false
+      - key: TENANT_ID
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: CLIENT_SECRET
+        sync: false
+      - key: TEST_MAILBOX_EMAIL
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DELEGATED_CLIENT_ID
+        sync: false
+      - key: REDIRECT_URI
+        sync: false
+      - key: DELEGATED_REFRESH_TOKEN
+        sync: false
+      - key: DELEGATED_MAILBOX_EMAIL
+        sync: false
+      - key: SHAREFILE_CLIENT_ID
+        sync: false
+      - key: SHAREFILE_CLIENT_SECRET
+        sync: false
+      - key: SHAREFILE_SUBDOMAIN
+        sync: false
+      - key: SHAREFILE_USERNAME
+        sync: false
+      - key: SHAREFILE_PASSWORD
+        sync: false
+      # Verifies POST /internal/notify-progress. Set to the same value as
+      # the cron service's copy below.
+      - key: INTERNAL_NOTIFY_SECRET
+        sync: false
+
+  - type: cron
+    name: payroll-automation-scan
+    runtime: node
+    # Matches scheduler.js's CRON_SCHEDULE (every 5 minutes) - keep these
+    # two in sync if the interval ever changes, since only ONE of them
+    # actually runs in production (see runScanOnce.js's own comment).
+    schedule: "*/5 * * * *"
+    buildCommand: npm install
+    startCommand: node runScanOnce.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: TENANT_ID
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: CLIENT_SECRET
+        sync: false
+      - key: TEST_MAILBOX_EMAIL
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DELEGATED_CLIENT_ID
+        sync: false
+      - key: REDIRECT_URI
+        sync: false
+      - key: DELEGATED_REFRESH_TOKEN
+        sync: false
+      - key: DELEGATED_MAILBOX_EMAIL
+        sync: false
+      - key: SHAREFILE_CLIENT_ID
+        sync: false
+      - key: SHAREFILE_CLIENT_SECRET
+        sync: false
+      - key: SHAREFILE_SUBDOMAIN
+        sync: false
+      - key: SHAREFILE_USERNAME
+        sync: false
+      - key: SHAREFILE_PASSWORD
+        sync: false
+      # Where to POST progress-ticks. Resolved automatically to the web
+      # service's private-network "host:port" - services/
+      # scanActivityService.js adds the "http://" scheme itself since this
+      # property yields a bare hostport.
+      - key: WEB_SERVICE_INTERNAL_URL
+        fromService:
+          name: payroll-automation-backend
+          type: web
+          property: hostport
+      # Must match the web service's copy above exactly.
+      - key: INTERNAL_NOTIFY_SECRET
+        sync: false

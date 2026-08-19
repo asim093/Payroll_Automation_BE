@@ -3,13 +3,10 @@ const mongoose = require('mongoose');
 const connectDB = require('./config/db');
 const { getRecentEmails, getEmailAttachments } = require('./services/graphService');
 const { processEmail } = require('./services/emailProcessor');
+const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
 const EmailLog = require('./models/EmailLog');
 
 
-// @param {Date|string} [sinceTimestamp] - only messages received on/after
-//   this time are fetched (delta-fetch watermark - see runAllFlows.js).
-//   Omit to fall back to the last 1 hour (used by manual/standalone runs,
-//   e.g. `node processInbox.js` directly).
 const processInbox = async (sinceTimestamp) => {
   const mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
   if (!mailboxEmail) {
@@ -30,7 +27,11 @@ const processInbox = async (sinceTimestamp) => {
   let needsReviewCount = 0;
   let duplicateCount = 0;
 
+  await startPhase('App-Only Inbox Scan', messages.length);
+
   for (const message of messages) {
+    await startItem(message.subject || '(no subject)');
+
     const alreadyLogged = await EmailLog.exists({ messageId: message.id });
 
     let attachments = [];
@@ -64,6 +65,8 @@ const processInbox = async (sinceTimestamp) => {
     } else if (result.status === 'needs_review') {
       needsReviewCount++;
     }
+
+    await completeItem();
   }
 
   const summary = {

@@ -9,10 +9,11 @@ const {
 const { saveAttachmentToClientFolder } = require('./fileStorage');
 const { uploadFileToDropbox } = require('./dropboxService');
 const { fetchFileFromShareFile } = require('./sharefileService');
-// findOrCreateOutlookFolder/moveEmailToFolder are NOT imported here — emails
-// intentionally stay in their original Outlook location, only category
-// assignment applies. See graphService.js for details.
-const { assignCategory, ensureCategoryExists } = require('./graphService');
+// moveEmailToFolder is NOT imported here — emails intentionally stay in
+// their original Outlook location. copyEmailToFolder (Phase 11) is
+// different: it LEAVES the original in place and files an extra COPY into
+// the client's dedicated folder - see completeFileProcessing() below.
+const { assignCategory, ensureCategoryExists, copyEmailToFolder } = require('./graphService');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 
 const PROCESSED_CATEGORY_NAME = 'Processed';
@@ -30,11 +31,60 @@ const PROCESSED_CATEGORY_COLOR = 'preset1'; // Orange — see graphService.ensur
  * attachments that happen to share an original name never overwrite each
  * other, on either destination.
  *
+ * NOTE: contentBuffer is only ever held in memory for the duration of this
+ * call — if both destinations fail, the bytes are gone (not persisted
+ * anywhere). That's why a later retry (see services/fileRetryService.js)
+ * has to re-fetch the original content from its actual source rather than
+ * simply re-attempting the same upload.
+ *
+ * @param {object} [options]
+ * @param {string} [options.sourceMessageId] - Graph messageId, for source
+ *   'outlook' - lets a failed save be retried later by re-fetching this
+ *   exact attachment from that email.
+ * @param {string} [options.sourceFileId] - ShareFile item Id, for source
+ *   'sharefile' - same idea, via downloadFileContentById().
+ * @param {string} [options.updateFileLogId] - if given, UPDATES that
+ *   existing FileLog in place instead of creating a new one — used by a
+ *   retry, so the dashboard doesn't accumulate a duplicate row per attempt.
  * @returns {Promise<{filename: string, size: number}>}
  */
-const saveToDestinations = async (client, fileName, contentBuffer, source) => {
+const saveToDestinations = async (client, fileName, contentBuffer, source, options = {}) => {
+  const { sourceMessageId, sourceFileId, updateFileLogId } = options;
   const referenceDate = new Date();
   const uniqueFileName = generateUniqueFilename(fileName, referenceDate);
+
+  const persistFileLog = (fields) => {
+    if (updateFileLogId) {
+      // Mongoose silently DROPS any key whose value is `undefined` from an
+      // update object (same as JSON.stringify) — passing `errorMessage:
+      // undefined` here would NOT clear a previous failure's error message
+      // on a successful retry, it would just leave the old value sitting
+      // there untouched. $unset is what actually removes a field, so any
+      // `undefined` gets converted into an explicit $unset instead of
+      // silently doing nothing.
+      const setFields = {};
+      const unsetFields = {};
+      for (const [key, value] of Object.entries(fields)) {
+        if (value === undefined) {
+          unsetFields[key] = '';
+        } else {
+          setFields[key] = value;
+        }
+      }
+      const update = {};
+      if (Object.keys(setFields).length) update.$set = setFields;
+      if (Object.keys(unsetFields).length) update.$unset = unsetFields;
+      return FileLog.findByIdAndUpdate(updateFileLogId, update, { new: true });
+    }
+    return FileLog.create({
+      source,
+      originalName: fileName,
+      clientId: client._id,
+      sourceMessageId,
+      sourceFileId,
+      ...fields,
+    });
+  };
 
   // Declared outside the try so the "both failed" branch below can still
   // reference the Dropbox error alongside the local one.
@@ -45,16 +95,15 @@ const saveToDestinations = async (client, fileName, contentBuffer, source) => {
     const dropboxFolderSegment = client.dropboxPath || client.name;
     const dropboxPath = await uploadFileToDropbox(dropboxFolderSegment, fileName, contentBuffer, referenceDate);
 
-    await FileLog.create({
-      source,
-      originalName: fileName,
-      clientId: client._id,
+    await persistFileLog({
       destinationPath: dropboxPath,
       destination: 'dropbox',
       status: 'moved',
       processedAt: new Date(),
+      errorMessage: undefined,
+      fallbackUsed: false,
     });
-    console.log(`  [DROPBOX] "${fileName}" → ${dropboxPath} (FileLog created).`);
+    console.log(`  [DROPBOX] "${fileName}" → ${dropboxPath} (FileLog ${updateFileLogId ? 'updated' : 'created'}).`);
 
     return { filename: uniqueFileName, size: contentBuffer.length };
   } catch (error) {
@@ -71,17 +120,15 @@ const saveToDestinations = async (client, fileName, contentBuffer, source) => {
       referenceDate
     );
 
-    await FileLog.create({
-      source,
-      originalName: fileName,
-      clientId: client._id,
+    await persistFileLog({
       destinationPath: localPath,
       destination: 'local',
       status: 'moved',
       fallbackUsed: true,
       processedAt: new Date(),
+      errorMessage: undefined,
     });
-    console.log(`  [FILE SAVED] "${fileName}" → ${localPath} (FileLog created, Dropbox fallback).`);
+    console.log(`  [FILE SAVED] "${fileName}" → ${localPath} (FileLog ${updateFileLogId ? 'updated' : 'created'}, Dropbox fallback).`);
 
     return { filename: uniqueFileName, size: contentBuffer.length };
   } catch (localError) {
@@ -92,10 +139,7 @@ const saveToDestinations = async (client, fileName, contentBuffer, source) => {
     console.error(`  [FILE SAVE] ERROR: "${fileName}" could not be saved locally either: ${localError.message}`);
     console.error(`  [FILE SAVE] "${fileName}" FAILED on both Dropbox and local storage.`);
 
-    await FileLog.create({
-      source,
-      originalName: fileName,
-      clientId: client._id,
+    await persistFileLog({
       destination: 'local',
       status: 'failed',
       errorMessage: `Dropbox: ${dropboxError.message}; Local: ${localError.message}`,
@@ -108,22 +152,24 @@ const saveToDestinations = async (client, fileName, contentBuffer, source) => {
 
 /**
  * Runs the full "matched client" file pipeline for an email: save each
- * attachment (local + optional Dropbox) and assign a "Processed" category
- * on the live mailbox. The email itself is left where it is (Inbox) — only
- * the file copy travels to Dropbox/local, never the email. Shared by
- * processEmail() (automatic matching) and
+ * attachment (local + optional Dropbox), assign a "Processed" category on
+ * the live mailbox, and (Phase 11) file a COPY of the email into the
+ * client's dedicated Outlook mail folder. The ORIGINAL email is always left
+ * where it is (Inbox) — only a file-copy travels to Dropbox/local, and only
+ * an email-COPY (never the original) travels to the client's folder. Shared
+ * by processEmail() (automatic matching) and
  * reviewQueueController.resolveReviewItem() (manual review-queue
  * assignment) so this logic only lives in one place.
  *
  * Does NOT create or update any EmailLog itself — callers persist
- * { savedAttachments, categoryAssigned } however fits their case (create a
- * new EmailLog vs. update an existing needs_review one).
+ * { savedAttachments, categoryAssigned, outlookCopySaved } however fits
+ * their case (create a new EmailLog vs. update an existing needs_review one).
  *
  * @param {object} emailData - only messageId and attachments are used
- * @param {object} matchedClient - Client document (needs _id, name)
+ * @param {object} matchedClient - Client document (needs _id, name, outlookFolderId)
  * @param {string} [accessToken] - delegated Graph token; ignored unless isDelegated is true
  * @param {boolean} [isDelegated] - false/omitted uses the app-only flow (TEST_MAILBOX_EMAIL)
- * @returns {Promise<{savedAttachments: object[], categoryAssigned: boolean, warnings: string[]}>}
+ * @returns {Promise<{savedAttachments: object[], categoryAssigned: boolean, outlookCopySaved: boolean, warnings: string[]}>}
  *   warnings holds one message per empty/corrupt attachment that got
  *   skipped — the email still gets matched/processed normally (the sender
  *   match was correct), the caller just records these as a note.
@@ -148,7 +194,9 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
       continue;
     }
 
-    const saved = await saveToDestinations(matchedClient, attachment.name, contentBuffer, 'outlook');
+    const saved = await saveToDestinations(matchedClient, attachment.name, contentBuffer, 'outlook', {
+      sourceMessageId: messageId,
+    });
     savedAttachments.push(saved);
   }
 
@@ -197,14 +245,49 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
     }
   }
 
-  // Note: emails are intentionally NOT moved out of their original Outlook
+  // Note: emails are intentionally NOT MOVED out of their original Outlook
   // location (Inbox) — boss confirmed only the file/attachment copy should
-  // travel to Dropbox/local, the email itself stays put. Category
-  // assignment above is the only mailbox-side change we make. (There used
-  // to be an Outlook-folder-move step here; see graphService.js's
-  // findOrCreateOutlookFolder()/moveEmailToFolder() for why it's kept but unused.)
+  // travel to Dropbox/local, the email itself stays put. (There used to be
+  // an Outlook-folder-MOVE step here; see graphService.js's
+  // findOrCreateOutlookFolder()/moveEmailToFolder() for why it's kept but
+  // unused.) The COPY step below is different in kind, not degree: it never
+  // touches the original, it only creates an extra copy elsewhere.
 
-  return { savedAttachments, categoryAssigned, warnings };
+  // 3. PHASE 11 — file a COPY of this email into the client's dedicated
+  // Outlook mail folder (auto-created at client-add time - see
+  // clientFolderSetupService.js), so the team gets an organized client-wise
+  // view inside Outlook itself, and a future cross-check/detection feature
+  // has a concrete reference point to build on. Gated on at least one
+  // attachment having actually been saved — an email with zero real
+  // attachments has nothing attachment-related to "back up" this way, so
+  // there's no folder-copy to make for it (only categorization applies).
+  let outlookCopySaved = false;
+
+  if (savedAttachments.length > 0 && matchedClient.outlookFolderId) {
+    try {
+      if (isDelegated && accessToken) {
+        await copyEmailToFolder(messageId, matchedClient.outlookFolderId, accessToken, undefined);
+      } else {
+        const mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
+        if (!mailboxEmail) {
+          throw new Error('TEST_MAILBOX_EMAIL not configured - cannot copy via the app-only flow.');
+        }
+        await copyEmailToFolder(messageId, matchedClient.outlookFolderId, undefined, mailboxEmail);
+      }
+      outlookCopySaved = true;
+      console.log(`  [OUTLOOK COPY] Filed a copy of ${messageId} into "${matchedClient.name}"'s mail folder.`);
+    } catch (error) {
+      console.error(
+        `  [OUTLOOK COPY] ERROR copying ${messageId} into "${matchedClient.name}"'s mail folder: ${error.message}`
+      );
+    }
+  } else if (savedAttachments.length > 0) {
+    console.log(
+      `  [OUTLOOK COPY] Skipped for "${matchedClient.name}" - no outlookFolderId on file (edit the client to (re-)run folder setup).`
+    );
+  }
+
+  return { savedAttachments, categoryAssigned, outlookCopySaved, warnings };
 };
 
 /**
@@ -317,7 +400,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
 
   if (matchedClient) {
     // 4. Matched -> run the shared file-processing pipeline, then log it.
-    const { savedAttachments, categoryAssigned, warnings } = await completeFileProcessing(
+    const { savedAttachments, categoryAssigned, outlookCopySaved, warnings } = await completeFileProcessing(
       { messageId, attachments },
       matchedClient,
       accessToken,
@@ -332,6 +415,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
       matchedClientId: matchedClient._id,
       status: 'processed',
       categoryAssigned,
+      outlookCopySaved,
       attachments: savedAttachments,
       authMode,
       // The match itself was correct, so status stays 'processed' even if
@@ -378,4 +462,4 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   return emailLog;
 };
 
-module.exports = { processEmail, completeFileProcessing };
+module.exports = { processEmail, completeFileProcessing, saveToDestinations };
