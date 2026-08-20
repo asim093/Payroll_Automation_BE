@@ -42,6 +42,11 @@ services:
         sync: false
       - key: SHAREFILE_PASSWORD
         sync: false
+      - key: WEB_SERVICE_INTERNAL_URL
+        fromService:
+          name: payroll-automation-backend
+          type: web
+          property: hostport
       - key: INTERNAL_NOTIFY_SECRET
         sync: false
 
