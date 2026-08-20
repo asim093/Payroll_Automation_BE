@@ -4,7 +4,7 @@ const connectDB = require('./config/db');
 const Client = require('./models/Client');
 const FileLog = require('./models/FileLog');
 const { scanShareFileForNewFiles, scanShareFileRootForUnmatchedItems } = require('./services/sharefileService');
-const { uploadFileToDropbox } = require('./services/dropboxService');
+const { uploadFileToDropbox, scanDropboxRootForUnmatchedItems } = require('./services/dropboxService');
 const { formatError } = require('./utils/formatError');
 const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
 
@@ -78,13 +78,29 @@ const processShareFileScan = async () => {
     console.error(`[SHAREFILE ORPHAN SCAN] ERROR: ${formatError(error)}`);
   }
 
+  // Dropbox counterpart of the same housekeeping - see
+  // dropboxService.js's scanDropboxRootForUnmatchedItems() for why this
+  // lives here (part of the same scan cycle) rather than as its own
+  // separate flow. Isolated in its own try/catch, same reasoning as the
+  // ShareFile one above: a failure here should never take down the actual
+  // file-copying work this function just finished.
+  let dropboxOrphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
+  try {
+    dropboxOrphanScan = await scanDropboxRootForUnmatchedItems();
+  } catch (error) {
+    console.error(`[DROPBOX ORPHAN SCAN] ERROR: ${formatError(error)}`);
+  }
+
   console.log('\n--- ShareFile scan summary ---');
   console.log(`Clients scanned: ${clientsScanned}`);
   console.log(`New files found: ${newFiles.length}`);
   console.log(`Saved to Dropbox: ${saved}`);
   console.log(`Failed (will retry next scan): ${failed}`);
   console.log(
-    `Root-folder items scanned: ${orphanScan.scanned} (new unmatched: ${orphanScan.newOrphans}, auto-resolved: ${orphanScan.autoResolved || 0})`
+    `ShareFile root-folder items scanned: ${orphanScan.scanned} (new unmatched: ${orphanScan.newOrphans}, auto-resolved: ${orphanScan.autoResolved || 0})`
+  );
+  console.log(
+    `Dropbox root-folder items scanned: ${dropboxOrphanScan.scanned} (new unmatched: ${dropboxOrphanScan.newOrphans}, auto-resolved: ${dropboxOrphanScan.autoResolved || 0})`
   );
 
   return {
@@ -95,6 +111,9 @@ const processShareFileScan = async () => {
     unmatchedItemsScanned: orphanScan.scanned,
     newUnmatchedItems: orphanScan.newOrphans,
     autoResolvedUnmatchedItems: orphanScan.autoResolved || 0,
+    dropboxUnmatchedItemsScanned: dropboxOrphanScan.scanned,
+    dropboxNewUnmatchedItems: dropboxOrphanScan.newOrphans,
+    dropboxAutoResolvedUnmatchedItems: dropboxOrphanScan.autoResolved || 0,
   };
 };
 

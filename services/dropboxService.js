@@ -3,6 +3,8 @@ const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
 const { joinFolderPath } = require('../utils/folderPath');
+const Client = require('../models/Client');
+const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
 
 // Same sanitization approach as fileStorage.js — client/file names can
 // contain characters that aren't safe in a Dropbox path.
@@ -199,4 +201,171 @@ const deleteDropboxFolder = async (clientFolderSegment) => {
   }
 };
 
-module.exports = { uploadFileToDropbox, ensureDropboxFolderExists, deleteDropboxFolder, getDropboxAccessToken };
+/**
+ * Dropbox counterpart of sharefileService.js's
+ * scanShareFileRootForUnmatchedItems() — walks Settings' dropboxRootPath
+ * ONE level deep looking for files/folders that don't belong to any known
+ * client, tracking anything found in UnmatchedDropboxItem (repeat scans
+ * refresh lastSeenAt/isEmpty instead of duplicating). A folder that now
+ * matches a known client (e.g. the client was only just added, or its path
+ * only just changed to point here) auto-clears any stale flag from an
+ * earlier scan, same as the ShareFile version.
+ *
+ * Bounded to the root level only (no recursive per-client mismatch-walk
+ * like ShareFile's Phase 6 extension) — Dropbox is this system's FINAL
+ * destination, not a source new files get pulled from, so there's no
+ * per-client "did something land outside the expected path" scan to mirror
+ * here, only "is there a stray top-level item that isn't a known client's
+ * folder at all".
+ *
+ * @returns {Promise<{scanned: number, newOrphans: number, autoResolved: number}>}
+ */
+const scanDropboxRootForUnmatchedItems = async () => {
+  const { dropboxRootPath } = await getSettings();
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+
+  const rootPath = dropboxRootPath ? `/${dropboxRootPath.replace(/^\/+/, '')}` : '';
+
+  let children;
+  try {
+    const response = await dbx.filesListFolder({ path: rootPath });
+    children = response.result.entries;
+  } catch (error) {
+    const errorSummary = error?.error?.error_summary || '';
+    if (errorSummary.startsWith('path/not_found')) {
+      // Root folder doesn't exist yet - nothing to scan (not an error; a
+      // brand-new/empty Dropbox setup legitimately has no root folder yet).
+      console.log(`  [DROPBOX ORPHAN SCAN] Root path "${dropboxRootPath}" not found - skipping.`);
+      return { scanned: 0, newOrphans: 0, autoResolved: 0 };
+    }
+    console.error(`scanDropboxRootForUnmatchedItems ERROR (listing root): ${formatError(error)}`);
+    throw error;
+  }
+
+  const clients = await Client.find();
+  const folderNameToClient = new Map();
+  clients.forEach((client) => {
+    const topSegment = (client.dropboxPath || client.name).split('/')[0].trim().toLowerCase();
+    if (!folderNameToClient.has(topSegment)) {
+      folderNameToClient.set(topSegment, client);
+    }
+  });
+
+  let newOrphans = 0;
+  let autoResolved = 0;
+
+  for (const entry of children) {
+    const isFolder = entry['.tag'] === 'folder';
+    const name = entry.name;
+    const matchedClient = isFolder ? folderNameToClient.get(name.trim().toLowerCase()) : undefined;
+
+    if (matchedClient) {
+      const result = await UnmatchedDropboxItem.updateOne(
+        { itemId: entry.id, status: 'unresolved' },
+        { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
+      );
+      autoResolved += result.modifiedCount || 0;
+      continue;
+    }
+
+    // Folders get one extra call to check whether they're empty - shown on
+    // the Review Queue so an empty one (often just a leftover from a
+    // client's path being changed) can be offered a one-click delete
+    // instead of only "assign to a client".
+    let isEmpty = false;
+    if (isFolder) {
+      const childResponse = await dbx.filesListFolder({ path: entry.path_lower });
+      isEmpty = childResponse.result.entries.length === 0;
+    }
+
+    const existing = await UnmatchedDropboxItem.findOne({ itemId: entry.id });
+    if (existing) {
+      if (existing.status === 'unresolved') {
+        existing.lastSeenAt = new Date();
+        existing.isEmpty = isEmpty;
+        await existing.save();
+      }
+      continue;
+    }
+
+    await UnmatchedDropboxItem.create({
+      itemId: entry.id,
+      itemType: isFolder ? 'folder' : 'file',
+      name,
+      path: entry.path_display,
+      isEmpty,
+      discoveredAt: new Date(),
+      lastSeenAt: new Date(),
+      status: 'unresolved',
+    });
+    console.log(
+      `  [DROPBOX ORPHAN SCAN] New unmatched ${isFolder ? 'folder' : 'file'}: "${entry.path_display}"${isEmpty ? ' (empty)' : ''}`
+    );
+    newOrphans++;
+  }
+
+  return { scanned: children.length, newOrphans, autoResolved };
+};
+
+/**
+ * Deletes a single Dropbox file/folder by its live path - used from the
+ * Unmatched Dropbox Items list (see unmatchedDropboxItemController.js) to
+ * remove an empty leftover folder directly. A path that's already gone is
+ * NOT an error.
+ *
+ * @param {string} path - entry.path_lower from the scan above
+ * @returns {Promise<{deleted: boolean}>}
+ */
+const deleteDropboxItemByPath = async (path) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+  try {
+    await dbx.filesDeleteV2({ path });
+    console.log(`  [DROPBOX] Deleted item "${path}".`);
+    return { deleted: true };
+  } catch (error) {
+    const errorSummary = error?.error?.error_summary || '';
+    if (errorSummary.startsWith('path_lookup/not_found')) {
+      return { deleted: false };
+    }
+    console.error(`deleteDropboxItemByPath ERROR ("${path}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
+/**
+ * Moves a stray Dropbox file (found sitting outside any known client's
+ * folder - see scanDropboxRootForUnmatchedItems() above) into a client's
+ * proper Dropbox folder. Used when resolving a "file"-type unmatched item
+ * - unlike ShareFile's equivalent (which downloads from ShareFile and
+ * uploads to Dropbox, since those are two different systems), this is a
+ * same-system move: the file is already in Dropbox, just in the wrong
+ * place. autorename avoids a collision if the destination already happens
+ * to have a file with the same name.
+ *
+ * @param {string} fromPath - entry.path_lower from the scan
+ * @param {string} clientFolderSegment - client.dropboxPath || client.name
+ * @param {string} fileName
+ * @returns {Promise<string>} the file's new Dropbox path
+ */
+const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, fileName) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+  const destinationFolder = await resolveDropboxFolderPath(clientFolderSegment);
+  const toPath = `${destinationFolder}/${sanitizeForPath(fileName)}`;
+
+  const response = await dbx.filesMoveV2({ from_path: fromPath, to_path: toPath, autorename: true });
+  console.log(`  [DROPBOX] Moved "${fromPath}" -> "${response.result.metadata.path_display}".`);
+  return response.result.metadata.path_display;
+};
+
+module.exports = {
+  uploadFileToDropbox,
+  ensureDropboxFolderExists,
+  deleteDropboxFolder,
+  scanDropboxRootForUnmatchedItems,
+  deleteDropboxItemByPath,
+  moveDropboxItemToClientFolder,
+  getDropboxAccessToken,
+};

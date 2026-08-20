@@ -5,7 +5,7 @@ const {
   resolveUnmatchedItem,
   dismissUnmatchedItem,
   deleteUnmatchedItem,
-} = require('../controllers/unmatchedShareFileItemController');
+} = require('../controllers/unmatchedDropboxItemController');
 
 router.get('/', getAllUnmatchedItems);
 router.patch('/:id/resolve', resolveUnmatchedItem);

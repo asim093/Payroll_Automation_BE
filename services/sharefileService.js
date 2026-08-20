@@ -383,7 +383,15 @@ const scanShareFileForNewFiles = async () => {
     }
 
     for (const file of files) {
-      const alreadyProcessed = await FileLog.findOne({ sourceFileId: file.Id });
+      // Scoped to THIS client, not a global sourceFileId lookup - ShareFile
+      // keeps a file's Id unchanged when it's manually moved between
+      // folders, so a global check would see "already processed" (from
+      // whichever client's folder it used to sit in) and silently skip it
+      // forever, even after it's been moved into a DIFFERENT client's
+      // folder. Scoping to clientId means a moved file is correctly
+      // treated as new for its new client, while still not being
+      // reprocessed if it's ever moved back to a client that already has it.
+      const alreadyProcessed = await FileLog.findOne({ sourceFileId: file.Id, clientId: client._id });
       if (alreadyProcessed) continue;
 
       try {
@@ -409,15 +417,19 @@ const scanShareFileForNewFiles = async () => {
 
 // Shared by both the root-level scan and the per-client mismatch-walk below
 // — upserts one unmatched item: creates it if genuinely new, refreshes
-// lastSeenAt if it's already tracked and still unresolved, and leaves
-// resolved/dismissed ones alone (repeat scans must never un-resolve
-// something an admin already handled).
-const recordUnmatchedItem = async (item, path) => {
+// lastSeenAt (and isEmpty, if given) if it's already tracked and still
+// unresolved, and leaves resolved/dismissed ones alone (repeat scans must
+// never un-resolve something an admin already handled).
+//
+// @param {boolean} [isEmpty] - only meaningful for folder items (see
+//   UnmatchedShareFileItem.isEmpty's own comment); omit for files.
+const recordUnmatchedItem = async (item, path, isEmpty = false) => {
   const isFile = isFileItem(item);
   const existing = await UnmatchedShareFileItem.findOne({ itemId: item.Id });
   if (existing) {
     if (existing.status === 'unresolved') {
       existing.lastSeenAt = new Date();
+      existing.isEmpty = isEmpty;
       await existing.save();
     }
     return false;
@@ -428,11 +440,12 @@ const recordUnmatchedItem = async (item, path) => {
     itemType: isFile ? 'file' : 'folder',
     name: item.Name || item.FileName || '(unnamed)',
     path,
+    isEmpty,
     discoveredAt: new Date(),
     lastSeenAt: new Date(),
     status: 'unresolved',
   });
-  console.log(`  [SHAREFILE ORPHAN SCAN] New unmatched ${isFile ? 'file' : 'folder'}: "${path}"`);
+  console.log(`  [SHAREFILE ORPHAN SCAN] New unmatched ${isFile ? 'file' : 'folder'}: "${path}"${isEmpty ? ' (empty)' : ''}`);
   return true;
 };
 
@@ -613,7 +626,13 @@ const scanShareFileRootForUnmatchedItems = async () => {
     }
 
     const path = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
-    const created = await recordUnmatchedItem(item, path);
+    // Folders get one extra call to check whether they're empty - shown on
+    // the Review Queue so an empty one (often just a leftover from a
+    // client's path being changed) can be offered a one-click delete
+    // instead of only "assign to a client". Files don't have children to
+    // check, so this is skipped for them.
+    const isEmpty = isFile ? false : (await listChildren(item.Id, apiBase, authHeaders)).length === 0;
+    const created = await recordUnmatchedItem(item, path, isEmpty);
     if (created) newOrphans++;
   }
 
@@ -691,6 +710,31 @@ const deleteShareFileFolder = async (fullPath) => {
   }
 };
 
+/**
+ * Deletes a single ShareFile item by its own Id - used from the Unmatched
+ * ShareFile Items list (see unmatchedShareFileItemController.js's
+ * deleteUnmatchedItem) to remove an empty leftover folder directly,
+ * without re-resolving it by path first (the item's Id is already known
+ * and stored on the UnmatchedShareFileItem record). A folder that's
+ * already gone is NOT an error.
+ *
+ * @param {string} itemId
+ * @returns {Promise<{deleted: boolean}>}
+ */
+const deleteShareFileItemById = async (itemId) => {
+  const { apiBase, authHeaders } = await getShareFileContext();
+  const deleteResponse = await fetch(`${apiBase}/Items(${itemId})`, {
+    method: 'DELETE',
+    headers: authHeaders,
+  });
+  if (!deleteResponse.ok && deleteResponse.status !== 404) {
+    const errorBody = await deleteResponse.text();
+    throw new Error(`Could not delete item ${itemId} (${deleteResponse.status}): ${errorBody}`);
+  }
+  console.log(`  [SHAREFILE] Deleted item ${itemId}.`);
+  return { deleted: true };
+};
+
 module.exports = {
   getShareFileAccessToken,
   getLatestFileInShareFileFolder,
@@ -698,6 +742,7 @@ module.exports = {
   scanShareFileForNewFiles,
   ensureShareFileFolderExists,
   deleteShareFileFolder,
+  deleteShareFileItemById,
   scanShareFileRootForUnmatchedItems,
   downloadFileContentById,
 };

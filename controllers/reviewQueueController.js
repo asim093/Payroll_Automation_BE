@@ -120,15 +120,40 @@ exports.updateReviewQueueEntry = async (req, res, next) => {
 };
 
 
+// Atomically marks a review item as resolved-by-this-client BEFORE any real
+// work starts - findOneAndUpdate with resolvedClientId:null as part of the
+// query is a compare-and-swap: only one caller can ever win it, even if a
+// single-resolve and a bulk-resolve (or two bulk-resolves from different
+// tabs) race each other for the exact same item. Without this, both could
+// pass a plain "is this already resolved" check before either had saved,
+// and the same email/file would get reprocessed twice. Reverted via
+// releaseReviewItemClaim() if the actual processing then fails, so a
+// failed attempt still leaves the item resolvable again rather than stuck
+// "claimed" forever.
+const claimReviewItem = async (reviewItemId, client) =>
+  ReviewQueue.findOneAndUpdate(
+    { _id: reviewItemId, resolvedClientId: null },
+    { resolvedClientId: client._id, resolvedBy: 'manual' }
+  );
+
+const releaseReviewItemClaim = async (reviewItemId) =>
+  ReviewQueue.findByIdAndUpdate(reviewItemId, { resolvedClientId: null });
+
 const resolveOneReviewItem = async (reviewItem, client) => {
+  const claimed = await claimReviewItem(reviewItem._id, client);
+  if (!claimed) {
+    return { error: 'Already resolved' };
+  }
+
   if (reviewItem.type === 'email') {
     const emailLog = await EmailLog.findById(reviewItem.referenceId);
     if (!emailLog) {
+      await releaseReviewItemClaim(reviewItem._id);
       return { error: 'Underlying EmailLog not found for this review item' };
     }
 
     try {
-    
+
       const isDelegated = emailLog.authMode === 'delegated';
       let accessToken;
       let mailboxEmail;
@@ -163,9 +188,6 @@ const resolveOneReviewItem = async (reviewItem, client) => {
       emailLog.processingError = undefined;
       await emailLog.save();
 
-      reviewItem.resolvedClientId = client._id;
-      reviewItem.resolvedBy = 'manual'; 
-      await reviewItem.save();
       return { error: null };
     } catch (processingError) {
       console.error(
@@ -174,15 +196,14 @@ const resolveOneReviewItem = async (reviewItem, client) => {
       emailLog.status = 'failed';
       emailLog.processingError = processingError.message;
       await emailLog.save();
+      // Release the claim so this item stays resolvable - a failed attempt
+      // shouldn't permanently lock it as "already resolved".
+      await releaseReviewItemClaim(reviewItem._id);
       return { error: processingError.message };
     }
   }
 
   if (reviewItem.type === 'file') {
-    reviewItem.resolvedClientId = client._id;
-    reviewItem.resolvedBy = 'manual';
-    await reviewItem.save();
-
     await FileLog.findByIdAndUpdate(reviewItem.referenceId, {
       clientId: client._id,
       status: 'moved',
@@ -246,10 +267,9 @@ exports.bulkResolveReviewItems = async (req, res, next) => {
         results.push({ entryId, success: false, error: 'Review queue entry not found' });
         continue;
       }
-      if (reviewItem.resolvedClientId) {
-        results.push({ entryId, success: false, error: 'Already resolved' });
-        continue;
-      }
+      // No pre-check here anymore - resolveOneReviewItem() now claims the
+      // item atomically itself (see its own comment), which is what
+      // actually closes the race a plain pre-check here couldn't.
 
       const { error } = await resolveOneReviewItem(reviewItem, client);
       results.push({ entryId, success: !error, error: error || undefined });

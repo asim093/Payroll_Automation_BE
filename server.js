@@ -13,6 +13,7 @@ const triggerRoutes = require('./routes/triggerRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const scanActivityRoutes = require('./routes/scanActivityRoutes');
 const unmatchedShareFileItemRoutes = require('./routes/unmatchedShareFileItemRoutes');
+const unmatchedDropboxItemRoutes = require('./routes/unmatchedDropboxItemRoutes');
 const internalRoutes = require('./routes/internalRoutes');
 const authRoutes = require('./routes/authRoutes');
 
@@ -31,6 +32,7 @@ app.use('/api', triggerRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/scan-activity', scanActivityRoutes);
 app.use('/api/unmatched-sharefile-items', unmatchedShareFileItemRoutes);
+app.use('/api/unmatched-dropbox-items', unmatchedDropboxItemRoutes);
 app.use('/api/auth', authRoutes);
 
 app.use('/internal', internalRoutes);

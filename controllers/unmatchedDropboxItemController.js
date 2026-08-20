@@ -1,18 +1,22 @@
-const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
+const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
-const { uploadFileToDropbox } = require('../services/dropboxService');
-const { downloadFileContentById, deleteShareFileItemById } = require('../services/sharefileService');
+const { moveDropboxItemToClientFolder, deleteDropboxItemByPath } = require('../services/dropboxService');
 const { formatError } = require('../utils/formatError');
 
-// @desc    List unmatched ShareFile items (unresolved by default - pass
-//          ?all=true for resolved/dismissed ones too, same convention as
-//          GET /api/review-queue).
-// @route   GET /api/unmatched-sharefile-items
+// Dropbox counterpart of controllers/unmatchedShareFileItemController.js —
+// same three actions (resolve/dismiss/delete), same semantics, adapted for
+// Dropbox being the SYSTEM'S FINAL destination rather than a source (see
+// services/dropboxService.js's scan function for why there's no per-client
+// mismatch-walk here).
+
+// @desc    List unmatched Dropbox items (unresolved by default - pass
+//          ?all=true for resolved/dismissed ones too).
+// @route   GET /api/unmatched-dropbox-items
 exports.getAllUnmatchedItems = async (req, res, next) => {
   try {
     const filter = req.query.all === 'true' ? {} : { status: 'unresolved' };
-    const items = await UnmatchedShareFileItem.find(filter).sort({ discoveredAt: -1 }).populate('resolvedClientId');
+    const items = await UnmatchedDropboxItem.find(filter).sort({ discoveredAt: -1 }).populate('resolvedClientId');
     res.status(200).json(items);
   } catch (error) {
     next(error);
@@ -21,17 +25,12 @@ exports.getAllUnmatchedItems = async (req, res, next) => {
 
 // @desc    Resolve an unmatched item by assigning it to a client.
 //          - "folder" items: the folder's own name becomes that client's
-//            shareFilePath going forward (this is a NEW top-level folder
-//            found sitting directly under the ShareFile root, so its name
-//            IS the client's full ShareFile path from here on) - no files
-//            are moved or copied, this just corrects where our system looks
-//            from now on. The regular per-client scan will pick up
-//            whatever's already inside it on its next cycle.
-//          - "file" items: downloaded from ShareFile and saved to Dropbox
-//            immediately (same pipeline processShareFileScan.js uses for
-//            already-known files), since a loose file has no "folder" to
-//            just start recognizing - it has to actually be filed somewhere.
-// @route   PATCH /api/unmatched-sharefile-items/:id/resolve
+//            dropboxPath going forward - no files are moved, this just
+//            corrects where our system looks from now on.
+//          - "file" items: moved (not copied - it's already in Dropbox,
+//            just in the wrong place) into the client's proper Dropbox
+//            folder, and logged in FileLog.
+// @route   PATCH /api/unmatched-dropbox-items/:id/resolve
 // @body    { clientId }
 exports.resolveUnmatchedItem = async (req, res, next) => {
   try {
@@ -40,7 +39,7 @@ exports.resolveUnmatchedItem = async (req, res, next) => {
       return res.status(400).json({ error: 'clientId is required' });
     }
 
-    const item = await UnmatchedShareFileItem.findById(req.params.id);
+    const item = await UnmatchedDropboxItem.findById(req.params.id);
     if (!item) {
       return res.status(404).json({ error: 'Unmatched item not found' });
     }
@@ -54,26 +53,25 @@ exports.resolveUnmatchedItem = async (req, res, next) => {
     }
 
     if (item.itemType === 'folder') {
-      client.shareFilePath = item.name;
+      client.dropboxPath = item.name;
       await client.save();
     } else {
       try {
-        const content = await downloadFileContentById(item.itemId);
-        const dropboxPath = await uploadFileToDropbox(client.dropboxPath || client.name, item.name, content);
+        const newPath = await moveDropboxItemToClientFolder(item.path, client.dropboxPath || client.name, item.name);
 
         await FileLog.create({
-          source: 'sharefile',
+          source: 'dropbox',
           sourceFileId: item.itemId,
           clientId: client._id,
           originalName: item.name,
-          destinationPath: dropboxPath,
+          destinationPath: newPath,
           destination: 'dropbox',
           status: 'moved',
           processedAt: new Date(),
         });
       } catch (error) {
-        console.error(`resolveUnmatchedItem: could not save file "${item.name}" - ${formatError(error)}`);
-        return res.status(502).json({ error: `Could not save this file to Dropbox: ${formatError(error)}` });
+        console.error(`resolveUnmatchedItem (dropbox): could not move "${item.name}" - ${formatError(error)}`);
+        return res.status(502).json({ error: `Could not move this file: ${formatError(error)}` });
       }
     }
 
@@ -82,7 +80,7 @@ exports.resolveUnmatchedItem = async (req, res, next) => {
     item.resolvedAt = new Date();
     await item.save();
 
-    const updated = await UnmatchedShareFileItem.findById(item._id).populate('resolvedClientId');
+    const updated = await UnmatchedDropboxItem.findById(item._id).populate('resolvedClientId');
     res.status(200).json(updated);
   } catch (error) {
     next(error);
@@ -92,10 +90,10 @@ exports.resolveUnmatchedItem = async (req, res, next) => {
 // @desc    Dismiss an unmatched item (e.g. it's a legitimate non-client
 //          folder like "Templates") so it stops being flagged on every
 //          future scan, without assigning it to any client.
-// @route   PATCH /api/unmatched-sharefile-items/:id/dismiss
+// @route   PATCH /api/unmatched-dropbox-items/:id/dismiss
 exports.dismissUnmatchedItem = async (req, res, next) => {
   try {
-    const item = await UnmatchedShareFileItem.findById(req.params.id);
+    const item = await UnmatchedDropboxItem.findById(req.params.id);
     if (!item) {
       return res.status(404).json({ error: 'Unmatched item not found' });
     }
@@ -111,17 +109,15 @@ exports.dismissUnmatchedItem = async (req, res, next) => {
   }
 };
 
-// @desc    Permanently delete an unmatched folder from ShareFile itself
-//          (not just dismiss the flag) - only ever offered for EMPTY
-//          folders (see UnmatchedShareFileItem.isEmpty), typically a
-//          leftover from a client's path being changed. Refuses to run on
-//          anything else, since deleting a non-empty folder or a loose
-//          file would destroy real content this endpoint was never meant
-//          to touch.
-// @route   DELETE /api/unmatched-sharefile-items/:id
+// @desc    Permanently delete an unmatched folder from Dropbox itself (not
+//          just dismiss the flag) - only ever offered for EMPTY folders
+//          (see UnmatchedDropboxItem.isEmpty). Refuses to run on anything
+//          else, since deleting a non-empty folder or a loose file would
+//          destroy real content this endpoint was never meant to touch.
+// @route   DELETE /api/unmatched-dropbox-items/:id
 exports.deleteUnmatchedItem = async (req, res, next) => {
   try {
-    const item = await UnmatchedShareFileItem.findById(req.params.id);
+    const item = await UnmatchedDropboxItem.findById(req.params.id);
     if (!item) {
       return res.status(404).json({ error: 'Unmatched item not found' });
     }
@@ -135,10 +131,10 @@ exports.deleteUnmatchedItem = async (req, res, next) => {
     }
 
     try {
-      await deleteShareFileItemById(item.itemId);
+      await deleteDropboxItemByPath(item.path);
     } catch (error) {
-      console.error(`deleteUnmatchedItem: could not delete "${item.path}" - ${formatError(error)}`);
-      return res.status(502).json({ error: `Could not delete this folder from ShareFile: ${formatError(error)}` });
+      console.error(`deleteUnmatchedItem (dropbox): could not delete "${item.path}" - ${formatError(error)}`);
+      return res.status(502).json({ error: `Could not delete this folder from Dropbox: ${formatError(error)}` });
     }
 
     item.status = 'dismissed';

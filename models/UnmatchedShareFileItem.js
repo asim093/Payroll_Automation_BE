@@ -50,6 +50,17 @@ const unmatchedShareFileItemSchema = new mongoose.Schema(
       enum: ['unresolved', 'resolved', 'dismissed'],
       default: 'unresolved',
     },
+    // Only meaningful for itemType 'folder' - whether it currently has
+    // anything inside it. Refreshed on every scan (see
+    // scanShareFileRootForUnmatchedItems()) so it always reflects the
+    // folder's live state, not just what it looked like when first
+    // discovered. Surfaced on the Review Queue so an empty folder (often
+    // just a leftover from a client's path being changed) can be offered a
+    // one-click delete instead of only "assign to a client".
+    isEmpty: {
+      type: Boolean,
+      default: false,
+    },
     // Set when resolved by assigning to a client (see
     // controllers/unmatchedShareFileItemController.js) - null for dismissed
     // items (dismissed = "not a client folder, stop flagging it" with no
