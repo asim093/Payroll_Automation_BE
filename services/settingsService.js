@@ -8,10 +8,12 @@ const DEFAULTS = {
   shareFileBridgeIntervalMinutes: 5,
 };
 
+// Floor matches the cron schedule itself (every 5 min - see render.yaml
+// and models/Settings.js's own comment on why 5, not 1).
 const clampIntervalMinutes = (value, fallback) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(180, Math.max(1, Math.round(parsed)));
+  return Math.min(180, Math.max(5, Math.round(parsed)));
 };
 
 

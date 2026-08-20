@@ -50,10 +50,30 @@ services:
       - key: INTERNAL_NOTIFY_SECRET
         sync: false
 
+  # PHASE-UI-8 (+ UI-9) — split from the old single "payroll-automation-scan"
+  # cron job into two independent services, one per process, so a slow/hung
+  # ShareFile scan can never delay/block Mail Sync (or vice versa). Both
+  # fire every 5 minutes; the Settings page's mailSyncIntervalMinutes/
+  # shareFileBridgeIntervalMinutes (see services/scanThrottle.js) can still
+  # raise the EFFECTIVE interval above 5 minutes with no redeploy, but 5
+  # minutes is the floor now.
+  #
+  # UI-9 note: this was originally "* * * * *" (every minute, self-throttled
+  # down to whatever Settings said) so the interval could reach all the way
+  # to a true 1-minute floor with no redeploy. Reverted after live use on
+  # Render showed two real problems with that: (1) unreliable env-var
+  # injection into cron containers spun up that frequently - SCHEDULED runs
+  # intermittently got MONGODB_URI as undefined while manual "Trigger Run"
+  # never did, and (2) ~10x more container starts/day than the original
+  # single 5-minute cron, which very plausibly costs more (Render bills
+  # cron jobs by compute time, and every invocation - even a fast
+  # not-due-yet skip - has its own cold-start overhead). 5 minutes matches
+  # the cadence this app has run reliably on since its very first cron
+  # design, so that's the floor now.
   - type: cron
     name: payroll-automation-mail-sync
     runtime: node
-    schedule: "* * * * *"
+    schedule: "*/5 * * * *"
     buildCommand: npm install
     startCommand: node runMailSyncOnce.js
     envVars:
@@ -102,7 +122,7 @@ services:
   - type: cron
     name: payroll-automation-sharefile-bridge
     runtime: node
-    schedule: "* * * * *"
+    schedule: "*/5 * * * *"
     buildCommand: npm install
     startCommand: node runShareFileBridgeOnce.js
     envVars:
