@@ -18,11 +18,18 @@ const processShareFileScan = async () => {
   let saved = 0;
   let failed = 0;
 
+  // PHASE-UI-11 — always announce this phase, even with 0 new files found
+  // (Mail Sync Engine already does this unconditionally - see
+  // processInbox.js/processInboxDelegated.js). The orphan-scans below
+  // still take real time regardless of newFiles.length (each is a full
+  // ShareFile/Dropbox API walk - tens of seconds is normal), so "Running"
+  // needs to stay visible for the WHOLE run, not just the file-copy loop,
+  // which is often skipped entirely.
+  await startPhase('shareFileBridge', 'ShareFile Scan', newFiles.length);
+
   if (newFiles.length === 0) {
     console.log('[SHAREFILE SCAN] No new files found.');
   } else {
-    await startPhase('shareFileBridge', 'ShareFile Scan', newFiles.length);
-
     for (const file of newFiles) {
       await startItem('shareFileBridge', `${file.fileName} (${file.clientName})`);
 
@@ -71,12 +78,18 @@ const processShareFileScan = async () => {
   }
 
 
+  // Labeled as its own "current item" (even though it isn't literally one
+  // of newFiles.length's items) purely so the dashboard's "Currently on..."
+  // line has something honest to show during this step - it's routinely
+  // the slowest part of the whole run (a full ShareFile API folder walk).
+  await startItem('shareFileBridge', 'Scanning ShareFile for orphaned folders/files...');
   let orphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
   try {
     orphanScan = await scanShareFileRootForUnmatchedItems();
   } catch (error) {
     console.error(`[SHAREFILE ORPHAN SCAN] ERROR: ${formatError(error)}`);
   }
+  await completeItem('shareFileBridge');
 
   // Dropbox counterpart of the same housekeeping - see
   // dropboxService.js's scanDropboxRootForUnmatchedItems() for why this
@@ -84,12 +97,14 @@ const processShareFileScan = async () => {
   // separate flow. Isolated in its own try/catch, same reasoning as the
   // ShareFile one above: a failure here should never take down the actual
   // file-copying work this function just finished.
+  await startItem('shareFileBridge', 'Scanning Dropbox for orphaned folders/files...');
   let dropboxOrphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
   try {
     dropboxOrphanScan = await scanDropboxRootForUnmatchedItems();
   } catch (error) {
     console.error(`[DROPBOX ORPHAN SCAN] ERROR: ${formatError(error)}`);
   }
+  await completeItem('shareFileBridge');
 
   console.log('\n--- ShareFile scan summary ---');
   console.log(`Clients scanned: ${clientsScanned}`);
