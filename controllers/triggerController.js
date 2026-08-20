@@ -2,20 +2,23 @@ const { runMailSyncOnce } = require('../services/mailSyncRunner');
 const { runShareFileBridgeOnce } = require('../services/shareFileBridgeRunner');
 const SystemStatus = require('../models/SystemStatus');
 
+// PHASE-UI-10 — "Scan Now" moved from one global navbar button (which fired
+// BOTH processes together) to a per-process button on each Process Card,
+// matching the split-cron architecture: each process is independently
+// triggerable now, same as it's independently scheduled/locked.
+const PROCESS_RUNNERS = {
+  mailSync: runMailSyncOnce,
+  shareFileBridge: runShareFileBridgeOnce,
+};
+
 // @desc    Fire-and-forget: responds immediately (no HTTP timeout risk, no
 //          matter how long the actual processing takes), then kicks off
-//          BOTH processes in the background AFTER the response has already
-//          been sent. The outcome is picked up later via
-//          GET /api/last-run-status, not from this response.
+//          the ONE requested process in the background AFTER the response
+//          has already been sent. The outcome is picked up later via
+//          GET /api/last-run-status / the scan-activity WebSocket feed,
+//          not from this response.
 //
-//          PHASE-UI-8 — runs Mail Sync Engine and ShareFile Bridge in
-//          PARALLEL now (Promise.allSettled, not sequential await) since
-//          they're independent processes with independent locks - a
-//          genuine speed win for the dashboard's "Scan Now" button on top
-//          of the split itself (used to be sequential: delegated -> app-
-//          only -> ShareFile, one after another).
-//
-//          Manual trigger always runs immediately regardless of each
+//          Manual trigger always runs immediately regardless of this
 //          process's configured interval (see Settings page) - the
 //          interval only throttles the unattended cron ticks (see
 //          services/scanThrottle.js); a human clicking "Scan Now" should
@@ -24,20 +27,23 @@ const SystemStatus = require('../models/SystemStatus');
 //          No secret here (unlike the internal notify-progress endpoint) -
 //          this is meant to be called from the logged-in dashboard itself,
 //          where a client-side secret couldn't be kept secret anyway.
-//          Safe to call even while a run is already in progress - each
-//          runner's own lock (see services/processRunner.js) just skips
-//          that process's cycle rather than double-processing anything.
+//          Safe to call even while this process is already running - its
+//          own lock (see services/processRunner.js) just skips this cycle
+//          rather than double-processing anything.
 // @route   POST /api/trigger-scan
+// @body    { processKey: 'mailSync' | 'shareFileBridge' }
 const triggerScan = async (req, res) => {
+  const { processKey } = req.body || {};
+  const runner = PROCESS_RUNNERS[processKey];
+
+  if (!runner) {
+    return res.status(400).json({ error: 'processKey must be "mailSync" or "shareFileBridge"' });
+  }
+
   res.json({ success: true, message: 'Scan started in background' });
 
-  Promise.allSettled([runMailSyncOnce(), runShareFileBridgeOnce()]).then(([mailSync, shareFileBridge]) => {
-    if (mailSync.status === 'rejected') {
-      console.error('[TRIGGER-SCAN] Mail Sync rejected unexpectedly:', mailSync.reason?.message);
-    }
-    if (shareFileBridge.status === 'rejected') {
-      console.error('[TRIGGER-SCAN] ShareFile Bridge rejected unexpectedly:', shareFileBridge.reason?.message);
-    }
+  runner().catch((error) => {
+    console.error(`[TRIGGER-SCAN] ${processKey} rejected unexpectedly:`, error.message);
   });
 };
 
