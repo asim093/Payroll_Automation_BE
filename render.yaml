@@ -49,6 +49,14 @@ services:
           property: hostport
       - key: INTERNAL_NOTIFY_SECRET
         sync: false
+      # PHASE-UI-13 — web-hosted mailbox login flow (see routes/oauthRoutes.js).
+      # Only needed on THIS service (it's the one serving the HTTP routes) -
+      # the cron services never need these, they just read the resulting
+      # token back out of MongoDB via delegatedAuthService.js.
+      - key: MICROSOFT_OAUTH_CALLBACK_URL
+        sync: false
+      - key: OAUTH_SETUP_SECRET
+        sync: false
 
   # PHASE-UI-8 (+ UI-9) — split from the old single "payroll-automation-scan"
   # cron job into two independent services, one per process, so a slow/hung
