@@ -1,24 +1,38 @@
 const mongoose = require('mongoose');
 
-// Single-document collection (same pattern as SystemStatus) tracking LIVE
-// progress of whichever flow (delegated inbox / app-only inbox / ShareFile
-// scan) is currently running inside runAllFlows() — this is what the
-// dashboard's processing-status panel polls to show "X in queue, Y
-// processing, Z done" in near-real-time (see services/scanActivityService.js
-// and PUT-free GET /api/scan-activity).
+// Live progress of whichever of the app's two independent processes (Mail
+// Sync Engine / ShareFile Bridge - see services/mailSyncRunner.js and
+// shareFileBridgeRunner.js) is currently running — this is what the
+// dashboard's Process Cards poll/subscribe to for near-real-time "X in
+// queue, Y processing, Z done" (see services/scanActivityService.js and
+// GET /api/scan-activity).
+//
+// PHASE-UI-8 — used to be a true singleton (one document, no key) back
+// when only one flow could ever be active at a time (they all ran
+// sequentially inside one job). Now that Mail Sync Engine and ShareFile
+// Bridge are independent cron jobs that can genuinely run at the same
+// moment, EACH gets its own document (processKey unique-indexed) so their
+// live progress can never clobber each other - at most 2 documents ever
+// exist in this collection.
 //
 // Deliberately separate from SystemStatus: that document is only written
-// ONCE per scan cycle (at the very end), while this one is written on every
+// ONCE per run (at the very end), while this one is written on every
 // single item processed — keeping them apart avoids the two write patterns
 // fighting over the same document.
 const scanActivitySchema = new mongoose.Schema(
   {
+    processKey: {
+      type: String,
+      enum: ['mailSync', 'shareFileBridge'],
+      required: true,
+      unique: true,
+    },
     isActive: {
       type: Boolean,
       default: false,
     },
-    // Human-readable label for whichever of the 3 flows is currently
-    // running, e.g. "Delegated Inbox Scan (Inbox + Junk)", "ShareFile Scan".
+    // Human-readable label for whatever this process is doing right now,
+    // e.g. "Delegated Inbox Scan (Inbox + Junk)", "ShareFile Scan".
     phaseLabel: {
       type: String,
       trim: true,

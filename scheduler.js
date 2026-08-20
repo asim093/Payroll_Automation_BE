@@ -1,27 +1,61 @@
-
-
+/**
+ * PHASE-UI-8 — optional alternative to Render's native Cron Job services
+ * (see render.yaml's payroll-automation-mail-sync / -sharefile-bridge) for
+ * running both processes from a single continuously-resident host instead
+ * (e.g. local dev, or any host that isn't Render). NOT wired into
+ * server.js/package.json - run manually with `node scheduler.js` if this
+ * deployment shape is what you want.
+ *
+ * Mirrors render.yaml's design as closely as it can from inside one
+ * process: an in-process node-cron tick every minute, each tick checking
+ * BOTH processes' own configured interval (Settings.mailSyncIntervalMinutes
+ * / shareFileBridgeIntervalMinutes - see services/scanThrottle.js) and
+ * running whichever one is actually due, in parallel with each other (they
+ * have independent locks - see services/processRunner.js - so this is safe
+ * even if both happen to be due on the same tick).
+ */
 require('dotenv').config();
 const cron = require('node-cron');
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
-const { runAllFlows } = require('./services/runAllFlows');
+const { isProcessDue } = require('./services/scanThrottle');
+const { runMailSyncOnce } = require('./services/mailSyncRunner');
+const { runShareFileBridgeOnce } = require('./services/shareFileBridgeRunner');
 
-const CRON_SCHEDULE = '*/5 * * * *'; // every 5 minutes
+const TICK_SCHEDULE = '* * * * *'; // every minute - see scanThrottle.js for why
 
+const runIfDue = async (label, processKey, intervalSettingKey, run) => {
+  const due = await isProcessDue(processKey, intervalSettingKey);
+  if (!due.shouldRun) {
+    console.log(`[SCHEDULER] ${label}: not due yet (~${due.minutesRemaining} min remaining).`);
+    return;
+  }
+  const result = await run();
+  if (result?.skipped) {
+    console.log(`[SCHEDULER] ${label}: skipped (previous run still in progress).`);
+  } else if (result?.success === false) {
+    console.error(`[SCHEDULER] ${label}: run failed - see errors above.`);
+  } else {
+    console.log(`[SCHEDULER] ${label}: completed successfully.`);
+  }
+};
 
-const runJob = async () => {
-  await runAllFlows();
+const tick = async () => {
+  await Promise.allSettled([
+    runIfDue('Mail Sync Engine', 'mailSync', 'mailSyncIntervalMinutes', runMailSyncOnce),
+    runIfDue('ShareFile Bridge', 'shareFileBridge', 'shareFileBridgeIntervalMinutes', runShareFileBridgeOnce),
+  ]);
 };
 
 const start = async () => {
   await connectDB();
 
-  console.log(`[SCHEDULER] Started. Will run every 5 minutes (cron: "${CRON_SCHEDULE}").`);
+  console.log(`[SCHEDULER] Started. Checking both processes every minute (cron: "${TICK_SCHEDULE}").`);
+  console.log('[SCHEDULER] Each process only does real work once its own Settings-configured interval has elapsed.');
   console.log('[SCHEDULER] Press Ctrl+C to stop.');
 
-
-  await runJob();
-  cron.schedule(CRON_SCHEDULE, runJob);
+  await tick();
+  cron.schedule(TICK_SCHEDULE, tick);
 };
 
 start();

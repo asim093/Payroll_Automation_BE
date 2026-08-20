@@ -1,15 +1,4 @@
-/**
- * ONE-TIME PRE-DEPLOYMENT CLEANUP SCRIPT
- * ------------------------------------------------------------------------
- * Removes development/testing data from the database before going live:
- *   1. Clients whose name starts with "Test" or "Demo" (all the ones we
- *      created for testing throughout development).
- *   2. Every EmailLog, FileLog, and ReviewQueue document — all of it is
- *      test-run output tied to those test clients / mock emails.
- * Real clients (added later, not matching the Test/Demo naming) are left
- * untouched. Run with `node cleanupTestData.js`.
- * ------------------------------------------------------------------------
- */
+
 require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');

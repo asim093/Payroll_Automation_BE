@@ -1,11 +1,4 @@
-/**
- * Best-effort deletion of a client's Dropbox/ShareFile/Outlook folders —
- * only ever run when an admin explicitly opts in while deleting a client
- * (see clientController.js's deleteClient + ClientsPage.jsx's delete
- * dialog). Mirrors clientFolderSetupService.js's shape: never throws,
- * always returns a warnings array (empty = everything that was attempted
- * succeeded or the folder was already gone).
- */
+
 const { getSettings } = require('./settingsService');
 const { joinFolderPath } = require('../utils/folderPath');
 const { deleteDropboxFolder } = require('./dropboxService');
@@ -17,18 +10,11 @@ const { formatError } = require('../utils/formatError');
 const hasDelegatedConfig = () =>
   Boolean(process.env.DELEGATED_REFRESH_TOKEN && process.env.DELEGATED_CLIENT_ID && process.env.DELEGATED_MAILBOX_EMAIL);
 
-/**
- * @param {import('../models/Client')} client - the client about to be
- *   removed (still needs its dropboxPath/shareFilePath/outlookFolderId, so
- *   this must run BEFORE the Client document itself is deleted).
- * @returns {Promise<string[]>} warnings - empty array means every
- *   destination was cleaned up (or had nothing to clean up).
- */
+
 const deleteClientFolders = async (client) => {
   const warnings = [];
   const { shareFileRootPath } = await getSettings();
 
-  // --- Dropbox ---
   try {
     const dropboxSegment = client.dropboxPath || client.name;
     const result = await deleteDropboxFolder(dropboxSegment);
@@ -39,9 +25,7 @@ const deleteClientFolders = async (client) => {
     const message = formatError(error);
     console.error(`  [CLIENT CLEANUP] Dropbox folder-delete FAILED for "${client.name}": ${message}`);
     warnings.push(`Dropbox: could not delete the folder automatically, please remove it manually. (${message})`);
-  }
-
-  // --- ShareFile ---
+  } 
   try {
     const shareFileSegment = client.shareFilePath || client.name;
     const resolvedPath = joinFolderPath(shareFileRootPath, shareFileSegment);
@@ -55,10 +39,7 @@ const deleteClientFolders = async (client) => {
     warnings.push(`ShareFile: could not delete the folder automatically, please remove it manually. (${message})`);
   }
 
-  // --- Outlook ---
-  // Only attempted when the delegated flow is configured AND this client
-  // actually has a cached folder id (see models/Client.js) — nothing to
-  // delete otherwise.
+ 
   if (hasDelegatedConfig() && client.outlookFolderId) {
     try {
       const accessToken = await getAccessTokenFromRefreshToken();

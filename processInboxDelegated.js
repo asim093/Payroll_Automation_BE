@@ -47,11 +47,11 @@ const processInboxDelegated = async (sinceTimestamp) => {
   let duplicateCount = 0;
   let errorCount = 0;
 
-  await startPhase('Delegated Inbox Scan (Inbox + Junk)', messages.length);
+  await startPhase('mailSync', 'Delegated Inbox Scan (Inbox + Junk)', messages.length);
 
   for (const message of messages) {
     console.log(`\n[${message._sourceFolder}] "${message.subject || '(no subject)'}"`);
-    await startItem(message.subject || '(no subject)');
+    await startItem('mailSync', message.subject || '(no subject)');
 
     try {
     
@@ -93,7 +93,7 @@ const processInboxDelegated = async (sinceTimestamp) => {
       console.error(`  ERROR processing message from ${message._sourceFolder}: ${error.message}`);
     }
 
-    await completeItem();
+    await completeItem('mailSync');
   }
 
   const summary = {

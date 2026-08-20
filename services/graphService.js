@@ -12,10 +12,7 @@ const msalConfig = {
 
 const cca = new ConfidentialClientApplication(msalConfig);
 
-/**
- * Get an app-only access token for Microsoft Graph using the
- * client-credentials flow (same logic as test-auth.js, reusable).
- */
+
 const getAccessToken = async () => {
   try {
     const result = await cca.acquireTokenByClientCredential({
@@ -30,32 +27,14 @@ const getAccessToken = async () => {
   }
 };
 
-// Every function below optionally accepts an accessToken — pass one (e.g.
-// from delegatedAuthService.getAccessTokenFromRefreshToken()) to call Graph
-// on behalf of a signed-in user; omit it to fall back to the app-only
-// client-credentials token from getAccessToken() above. This is what lets
-// the same functions serve both processInbox.js (app-only) and
-// processInboxDelegated.js (delegated) without duplicating any code.
+
 const resolveAccessToken = async (accessToken) => accessToken || getAccessToken();
 
-// App-only calls address a mailbox as "users/{mailboxEmail}"; delegated
-// calls address the signed-in user's own mailbox as "me" and don't take a
-// mailbox address at all. Passing no mailboxEmail selects "me".
+
 const mailboxSegment = (mailboxEmail) =>
   mailboxEmail ? `users/${encodeURIComponent(mailboxEmail)}` : 'me';
 
-// Graph throttles with HTTP 429 under sustained load (plausible during a
-// high-volume email batch — see runAllFlows.js's overlap-guard comment for
-// the same underlying concern). Graph's 429 response includes a
-// "Retry-After" header telling us exactly how long to back off, in
-// seconds — this wraps a plain fetch() call, waits that long (or 5s if the
-// header is missing), and retries the SAME request, up to
-// MAX_RATE_LIMIT_RETRIES times. After that many failed attempts it just
-// returns the last (still-429) response as-is, so the caller's existing
-// `if (!response.ok) throw ...` handling takes over unchanged — a
-// persistent rate-limit still surfaces as a real, visible error rather
-// than retrying forever. Non-429 responses (success or any other error)
-// are returned immediately on the first attempt, with zero added delay.
+
 const MAX_RATE_LIMIT_RETRIES = 2;
 const DEFAULT_RATE_LIMIT_WAIT_MS = 5000;
 
@@ -80,39 +59,6 @@ const fetchWithRetry = async (url, options, attempt = 0) => {
   return response;
 };
 
-/**
- * Fetch emails received since a given timestamp from a mailbox folder.
- * GET /{users/{mailboxEmail}|me}/messages
- *     ?$top=50&$orderby=receivedDateTime desc&$filter=receivedDateTime ge {sinceTimestamp}
- * — or, when folderName is given —
- * GET /{users/{mailboxEmail}|me}/mailFolders/{folderName}/messages?...
- *
- * Deliberately does NOT filter on isRead — a message a user opened in
- * Outlook before our scan ran would permanently disappear from an
- * isRead:false filter and never get processed. Time-based delta-fetching
- * (this sinceTimestamp) is the replacement: every message received since
- * the last successful scan is considered, read or not. The messageId-based
- * duplicate check in EmailLog (see processEmail()) is what keeps this from
- * reprocessing anything already handled if the same window gets checked
- * twice (e.g. after a failed scan cycle).
- *
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [folderName] - a Graph well-known folder name (e.g.
- *   "Inbox", "JunkEmail") to scope the fetch to that one folder. OMITTING
- *   THIS IS NOT "Inbox only" — it hits GET /messages unscoped, which Graph
- *   resolves against the ENTIRE mailbox, Deleted Items included. Callers
- *   that want Inbox behavior must pass "Inbox" explicitly (see
- *   processInbox.js/processInboxDelegated.js, which fetch "Inbox" and
- *   "JunkEmail" as two separate scoped calls rather than relying on the
- *   unscoped default) — an earlier version of this comment claimed omitting
- *   it defaulted to Inbox, which caused a real bug: a deleted-and-purged-
- *   from-EmailLog test email that was only soft-deleted in Outlook (still
- *   sitting in Deleted Items) kept getting re-fetched and reprocessed on
- *   every scan.
- * @param {Date|string} [sinceTimestamp] - only messages received on/after
- *   this time are returned. Omit to fall back to the last 1 hour.
- */
 const getRecentEmails = async (mailboxEmail, accessToken, folderName, sinceTimestamp) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -152,14 +98,7 @@ const getRecentEmails = async (mailboxEmail, accessToken, folderName, sinceTimes
   }
 };
 
-/**
- * Fetch attachments for a specific email.
- * GET /{users/{mailboxEmail}|me}/messages/{messageId}/attachments
- *
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- * @param {string} messageId
- * @param {string} [accessToken] - omit to use the app-only token
- */
+
 const getEmailAttachments = async (mailboxEmail, messageId, accessToken) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -192,17 +131,7 @@ const getEmailAttachments = async (mailboxEmail, messageId, accessToken) => {
   }
 };
 
-/**
- * Assign a category to an email, preserving any categories already on it.
- * 1. GET the message with $select=categories to read its current categories.
- * 2. Add categoryName to that array if it isn't already present.
- * 3. PATCH the message with the merged array.
- *
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- * @param {string} messageId
- * @param {string} categoryName
- * @param {string} [accessToken] - omit to use the app-only token
- */
+
 const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -211,7 +140,6 @@ const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken
       messageId
     )}`;
 
-    // 1. Fetch current categories
     const getResponse = await fetchWithRetry(`${messageUrl}?$select=categories`, {
       method: 'GET',
       headers: {
@@ -231,12 +159,10 @@ const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken
     const messageData = await getResponse.json();
     const existingCategories = messageData.categories || [];
 
-    // 2. Merge in the new category, avoiding duplicates
     const mergedCategories = existingCategories.includes(categoryName)
       ? existingCategories
       : [...existingCategories, categoryName];
 
-    // 3. PATCH the message with the full merged array
     const patchResponse = await fetchWithRetry(messageUrl, {
       method: 'PATCH',
       headers: {
@@ -262,24 +188,6 @@ const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken
   }
 };
 
-/**
- * Ensures a category exists in the mailbox's master category list, WITH a
- * color, before it's ever assigned to a message. Outlook's category colors
- * live on the mailbox-level master list (outlook/masterCategories), not on
- * the message — assigning a category name to a message that isn't in that
- * list yet just creates a colorless entry. Never overwrites an existing
- * category's color (e.g. if Marcel already made a "Processed" category in
- * some other color by hand) — does nothing if the name already exists.
- *
- * @param {string} categoryName
- * @param {string} color - a Graph preset color id, e.g. "preset1". Presets
- *   run preset0-preset24: 0 Red, 1 Orange, 2 Brown, 3 Yellow, 4 Green,
- *   5 Teal, 6 Olive, 7 Blue, 8 Purple, 9 Cranberry, 10 Steel, 11 DarkSteel,
- *   12 Gray, 13 DarkGray, 14 Black, 15-24 Dark* repeats of 0-9.
- *   Source: https://learn.microsoft.com/en-us/graph/api/resources/outlookcategory
- * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- */
 const ensureCategoryExists = async (categoryName, color, accessToken, mailboxEmail) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -323,21 +231,7 @@ const ensureCategoryExists = async (categoryName, color, accessToken, mailboxEma
   }
 };
 
-/**
- * Find (or create) a nested mail folder by path, e.g. "Clients/Acme Corp"
- * — walks the path one segment at a time, creating any segment that
- * doesn't already exist as a child of the previous one, and returns the
- * final (innermost) folder's id.
- *
- * Used at client-add/edit time (see services/clientFolderSetupService.js)
- * to ensure a client has a dedicated mail folder — NOT to move emails into
- * it; emails still stay in their original location (Inbox) per requirements
- * (see moveEmailToFolder's own note below, still unused for that reason).
- *
- * @param {string} folderPath - e.g. "Clients/Acme Corp"
- * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- */
+
 const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -347,10 +241,9 @@ const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) 
       .map((part) => part.trim())
       .filter(Boolean);
 
-    let parentId = null; // null = root level (mailFolders directly, no parent)
+    let parentId = null; 
 
     for (const folderName of pathSegments) {
-      // OData string literals escape a single quote by doubling it.
       const escapedName = folderName.replace(/'/g, "''");
       const listBase = parentId
         ? `${GRAPH_BASE_URL}/${segment}/mailFolders/${parentId}/childFolders`
@@ -371,7 +264,6 @@ const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) 
         continue;
       }
 
-      // Not found under this parent — create it.
       const createResponse = await fetchWithRetry(listBase, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -393,24 +285,6 @@ const findOrCreateOutlookFolder = async (folderPath, accessToken, mailboxEmail) 
   }
 };
 
-/**
- * NOT CURRENTLY USED - boss confirmed emails should stay in original
- * location (Inbox), only file-copies move to destination (Dropbox/local).
- * Kept here in case requirements change.
- *
- * Move an email into a different mail folder.
- * POST /{users/{mailboxEmail}|me}/messages/{messageId}/move  { destinationId }
- *
- * Note: Graph gives the moved message a NEW id in the destination folder —
- * the original messageId stops being addressable once this call succeeds.
- * Call this AFTER anything else that still needs the original id (e.g.
- * assignCategory), never before.
- *
- * @param {string} messageId
- * @param {string} folderId - from findOrCreateOutlookFolder()
- * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- */
 const moveEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -436,26 +310,7 @@ const moveEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail)
   }
 };
 
-/**
- * PHASE 11 — copies an email into a different mail folder, LEAVING THE
- * ORIGINAL where it is. Unlike moveEmailToFolder() above (unused, on
- * purpose - see its own comment), this one IS actively used:
- * emailProcessor.js's completeFileProcessing() calls this to file a copy of
- * a matched email into that client's dedicated Outlook folder (Phase 3),
- * for an organized client-wise view in Outlook itself - the original stays
- * in Inbox untouched, satisfying the same "emails don't move" requirement
- * moveEmailToFolder's comment documents, since this genuinely doesn't move
- * anything.
- *
- * POST /{users/{mailboxEmail}|me}/messages/{messageId}/copy  { destinationId }
- *
- * @param {string} messageId
- * @param {string} folderId - Client.outlookFolderId (cached at
- *   create/edit time by clientFolderSetupService.js)
- * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- * @returns {Promise<object>} the newly-created copy (has its own, different id)
- */
+
 const copyEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -481,18 +336,7 @@ const copyEmailToFolder = async (messageId, folderId, accessToken, mailboxEmail)
   }
 };
 
-/**
- * Deletes a client's dedicated Outlook mail folder — used when an admin
- * opts in to folder-cleanup while deleting a client (see
- * services/clientFolderCleanupService.js). Uses the folder Id cached on
- * Client.outlookFolderId at setup time (see findOrCreateOutlookFolder
- * above), so this never has to re-walk the folder path. A folder that's
- * already gone (404) is NOT an error.
- *
- * @param {string} folderId
- * @param {string} [accessToken] - omit to use the app-only token
- * @param {string} [mailboxEmail] - omit to use "me" (the delegated user)
- */
+
 const deleteMailFolder = async (folderId, accessToken, mailboxEmail) => {
   try {
     const token = await resolveAccessToken(accessToken);

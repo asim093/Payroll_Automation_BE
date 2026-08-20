@@ -78,6 +78,14 @@ const emailLogSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    // Set only by scripts/seedDemoActivity.js — lets the dashboard flag
+    // seeded rows (see components/RecentActivityTable.jsx) and lets
+    // scripts/removeDemoActivity.js find exactly (and only) what it
+    // inserted, without touching real data.
+    isDemoData: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

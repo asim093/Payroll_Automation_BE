@@ -51,11 +51,60 @@ services:
         sync: false
 
   - type: cron
-    name: payroll-automation-scan
+    name: payroll-automation-mail-sync
     runtime: node
-    schedule: "*/5 * * * *"
+    schedule: "* * * * *"
     buildCommand: npm install
-    startCommand: node runScanOnce.js
+    startCommand: node runMailSyncOnce.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: TENANT_ID
+        sync: false
+      - key: CLIENT_ID
+        sync: false
+      - key: CLIENT_SECRET
+        sync: false
+      - key: TEST_MAILBOX_EMAIL
+        sync: false
+      - key: DROPBOX_APP_KEY
+        sync: false
+      - key: DROPBOX_APP_SECRET
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DELEGATED_CLIENT_ID
+        sync: false
+      - key: REDIRECT_URI
+        sync: false
+      - key: DELEGATED_REFRESH_TOKEN
+        sync: false
+      - key: DELEGATED_MAILBOX_EMAIL
+        sync: false
+      - key: SHAREFILE_CLIENT_ID
+        sync: false
+      - key: SHAREFILE_CLIENT_SECRET
+        sync: false
+      - key: SHAREFILE_SUBDOMAIN
+        sync: false
+      - key: SHAREFILE_USERNAME
+        sync: false
+      - key: SHAREFILE_PASSWORD
+        sync: false
+      - key: WEB_SERVICE_INTERNAL_URL
+        fromService:
+          name: payroll-automation-backend
+          type: web
+          property: hostport
+      - key: INTERNAL_NOTIFY_SECRET
+        sync: false
+
+  - type: cron
+    name: payroll-automation-sharefile-bridge
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: npm install
+    startCommand: node runShareFileBridgeOnce.js
     envVars:
       - key: MONGODB_URI
         sync: false

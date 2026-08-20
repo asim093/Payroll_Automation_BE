@@ -29,6 +29,23 @@ const settingsSchema = new mongoose.Schema(
       trim: true,
       default: 'Clients',
     },
+    // PHASE-UI-8 — how often (in minutes) each of the two independent cron
+    // jobs actually does real work (see backend/services/scanThrottle.js).
+    // The underlying Render Cron Jobs fire every minute regardless (see
+    // render.yaml) so this takes effect immediately on save, no redeploy —
+    // the NEXT tick just checks this value and either runs or skips.
+    mailSyncIntervalMinutes: {
+      type: Number,
+      default: 5,
+      min: 1,
+      max: 180,
+    },
+    shareFileBridgeIntervalMinutes: {
+      type: Number,
+      default: 5,
+      min: 1,
+      max: 180,
+    },
   },
   { timestamps: true }
 );

@@ -1,21 +1,4 @@
-/**
- * Re-attempts saving a permanently-failed FileLog (status:'failed', both
- * Dropbox AND local storage failed at the time it was first processed).
- *
- * The tricky part: the attachment's actual BYTES were never persisted
- * anywhere once the original save failed (see emailProcessor.js's
- * saveToDestinations() — contentBuffer only ever lives in memory for the
- * duration of one processing pass). So a retry can't just "try the upload
- * again" - it has to re-fetch the original content from wherever it
- * actually still lives:
- *   - source 'sharefile': re-download by the stored sourceFileId.
- *   - source 'outlook': re-fetch the source email's attachments via Graph
- *     (using sourceMessageId) and match by original filename.
- *
- * Updates the SAME FileLog document in place (via saveToDestinations's
- * updateFileLogId option) rather than creating a second entry, so retrying
- * doesn't leave a duplicate row in the file history.
- */
+
 const Client = require('../models/Client');
 const EmailLog = require('../models/EmailLog');
 const { saveToDestinations } = require('./emailProcessor');
@@ -45,9 +28,7 @@ const retryFailedFile = async (fileLog) => {
       throw new Error('No source-email reference on file - cannot retry automatically (this file predates that being tracked)');
     }
 
-    // The delegated-vs-app-only choice has to match however the ORIGINAL
-    // email was fetched, so we're re-authenticating against the same
-    // mailbox the attachment actually lives in - see EmailLog.authMode.
+   
     const emailLog = await EmailLog.findOne({ messageId: fileLog.sourceMessageId });
     const isDelegated = emailLog?.authMode === 'delegated';
     let accessToken;

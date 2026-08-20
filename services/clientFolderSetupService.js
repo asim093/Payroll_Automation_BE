@@ -1,12 +1,4 @@
-/**
- * PHASE 3 — client-add/edit-time folder existence-check + auto-create.
- *
- * Runs all three destination checks best-effort: a failure in one (or all)
- * NEVER blocks saving the client — see clientController.js, which always
- * saves first and calls this afterward. Each failure becomes one entry in
- * the returned `warnings` array, persisted onto Client.folderSetupWarnings
- * so it can be surfaced on the Clients page until manually resolved.
- */
+
 const Client = require('../models/Client');
 const { getSettings } = require('./settingsService');
 const { joinFolderPath } = require('../utils/folderPath');
@@ -21,16 +13,7 @@ const hasDelegatedConfig = () =>
 
 const normalizePathSegment = (value) => String(value || '').trim().toLowerCase();
 
-/**
- * Two clients pointing at the exact same Dropbox/ShareFile path means their
- * files land in the same physical folder and get mixed together — this is
- * never intentional, but nothing else in the create/edit flow would catch
- * it (ensureXFolderExists() just sees "already exists" and reports no
- * warning). Checked independently of the create/exists calls below so it
- * still fires even when the folder itself was created without any error.
- *
- * @returns {Promise<string[]>} zero, one, or two warnings (Dropbox/ShareFile)
- */
+
 const checkForPathCollisions = async (client) => {
   const warnings = [];
   const dropboxSegment = normalizePathSegment(client.dropboxPath || client.name);
@@ -61,17 +44,11 @@ const checkForPathCollisions = async (client) => {
   return warnings;
 };
 
-/**
- * @param {import('../models/Client')} client - a saved Client document (or
- *   plain object) with name/dropboxPath/shareFilePath already set.
- * @returns {Promise<string[]>} warnings - empty array means everything
- *   checked out (or was created) fine.
- */
+
 const setupClientFolders = async (client) => {
   const warnings = await checkForPathCollisions(client);
   const { dropboxRootPath, shareFileRootPath, outlookRootPath } = await getSettings();
 
-  // --- Dropbox ---
   try {
     const dropboxSegment = client.dropboxPath || client.name;
     const result = await ensureDropboxFolderExists(dropboxSegment);
@@ -84,7 +61,6 @@ const setupClientFolders = async (client) => {
     warnings.push(`Dropbox: could not create the folder automatically, please check manually. (${message})`);
   }
 
-  // --- ShareFile ---
   try {
     const shareFileSegment = client.shareFilePath || client.name;
     const resolvedPath = joinFolderPath(shareFileRootPath, shareFileSegment);
@@ -98,18 +74,12 @@ const setupClientFolders = async (client) => {
     warnings.push(`ShareFile: could not create the folder automatically, please check manually. (${message})`);
   }
 
-  // --- Outlook ---
-  // Only attempted when the delegated flow is configured — same guard
-  // runAllFlows.js uses before running the delegated email flow at all.
+ 
   if (hasDelegatedConfig()) {
     try {
       const resolvedPath = joinFolderPath(outlookRootPath, client.name);
       const accessToken = await getAccessTokenFromRefreshToken();
       const folderId = await findOrCreateOutlookFolder(resolvedPath, accessToken, undefined);
-      // PHASE 11 — cached on the client so emailProcessor.js's per-email
-      // copy-to-folder step can just read this field instead of re-walking
-      // the folder path via Graph on every single email (see that field's
-      // own comment on models/Client.js).
       client.outlookFolderId = folderId;
       console.log(`  [CLIENT SETUP] Outlook mail-folder "${resolvedPath}" ensured (id cached).`);
     } catch (error) {

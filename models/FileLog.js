@@ -69,6 +69,12 @@ const fileLogSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    // Set only by scripts/seedDemoActivity.js — see EmailLog.js's matching
+    // field for why.
+    isDemoData: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

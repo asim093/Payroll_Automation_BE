@@ -21,10 +21,10 @@ const processShareFileScan = async () => {
   if (newFiles.length === 0) {
     console.log('[SHAREFILE SCAN] No new files found.');
   } else {
-    await startPhase('ShareFile Scan', newFiles.length);
+    await startPhase('shareFileBridge', 'ShareFile Scan', newFiles.length);
 
     for (const file of newFiles) {
-      await startItem(`${file.fileName} (${file.clientName})`);
+      await startItem('shareFileBridge', `${file.fileName} (${file.clientName})`);
 
       try {
         const dropboxPath = await uploadFileToDropbox(file.dropboxFolderSegment, file.fileName, file.content);
@@ -66,7 +66,7 @@ const processShareFileScan = async () => {
         }
       }
 
-      await completeItem();
+      await completeItem('shareFileBridge');
     }
   }
 

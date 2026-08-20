@@ -40,10 +40,10 @@ const processInbox = async (sinceTimestamp) => {
   let needsReviewCount = 0;
   let duplicateCount = 0;
 
-  await startPhase('App-Only Inbox Scan (Inbox + Junk)', messages.length);
+  await startPhase('mailSync', 'App-Only Inbox Scan (Inbox + Junk)', messages.length);
 
   for (const message of messages) {
-    await startItem(message.subject || '(no subject)');
+    await startItem('mailSync', message.subject || '(no subject)');
 
     const alreadyLogged = await EmailLog.exists({ messageId: message.id });
 
@@ -79,7 +79,7 @@ const processInbox = async (sinceTimestamp) => {
       needsReviewCount++;
     }
 
-    await completeItem();
+    await completeItem('mailSync');
   }
 
   const summary = {
