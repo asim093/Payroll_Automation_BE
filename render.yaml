@@ -59,8 +59,12 @@ services:
         sync: false
       - key: SHAREFILE_OAUTH_CALLBACK_URL
         sync: false
+      # PHASE-UI-15 — web-hosted Dropbox login flow, same reasoning as
+      # MICROSOFT_OAUTH_CALLBACK_URL above (only needed on this service).
+      - key: DROPBOX_OAUTH_CALLBACK_URL
+        sync: false
 
-  
+
   - type: cron
     name: payroll-automation-mail-sync
     runtime: node

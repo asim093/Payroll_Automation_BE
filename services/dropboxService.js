@@ -5,44 +5,68 @@ const { getSettings } = require('./settingsService');
 const { joinFolderPath } = require('../utils/folderPath');
 const Client = require('../models/Client');
 const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
+const OAuthCredential = require('../models/OAuthCredential');
+const {
+  PROVIDER_KEY: DROPBOX_OAUTH_PROVIDER_KEY,
+  refreshAccessToken,
+} = require('./dropboxOAuthSetupService');
 
 const sanitizeForPath = (value) => String(value).replace(/[\\/:*?"<>|]/g, '_').trim();
 
-
-const getDropboxAccessToken = async () => {
+// Legacy path: exchanges .env's DROPBOX_REFRESH_TOKEN (obtained by manually
+// running getDropboxRefreshToken.js once) for an access token. Falls back
+// to this only if no hosted login (see dropboxOAuthSetupService.js) has
+// been completed yet, so nothing breaks mid-migration.
+const getDropboxAccessTokenViaEnv = async () => {
   const refreshToken = process.env.DROPBOX_REFRESH_TOKEN;
   const appKey = process.env.DROPBOX_APP_KEY;
   const appSecret = process.env.DROPBOX_APP_SECRET;
 
   if (!refreshToken) {
-    throw new Error('DROPBOX_REFRESH_TOKEN is not set in .env. Pehle getDropboxRefreshToken.js chalayein.');
+    throw new Error(
+      'No Dropbox authorization available — either complete the hosted login at /oauth/dropbox/start, or run getDropboxRefreshToken.js and set DROPBOX_REFRESH_TOKEN in .env.'
+    );
   }
   if (!appKey || !appSecret) {
     throw new Error('DROPBOX_APP_KEY / DROPBOX_APP_SECRET is not set in .env.');
   }
 
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: appKey,
+    client_secret: appSecret,
+  });
+
+  const response = await fetch('https://api.dropboxapi.com/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error(`getDropboxAccessToken ERROR: status ${response.status} - ${errorBody}`);
+    throw new Error(`Dropbox token refresh failed (${response.status}): ${errorBody}`);
+  }
+
+  const data = await response.json();
+  return data.access_token;
+};
+
+// Checks MongoDB (OAuthCredential, provider: 'dropbox') first - a refresh
+// token saved there means someone completed the hosted /oauth/dropbox/start
+// login. Falls back to the old .env-based DROPBOX_REFRESH_TOKEN otherwise.
+// Same DB-first-then-.env pattern as delegatedAuthService.js and
+// sharefileService.js's getShareFileAccessToken().
+const getDropboxAccessToken = async () => {
   try {
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: appKey,
-      client_secret: appSecret,
-    });
-
-    const response = await fetch('https://api.dropboxapi.com/oauth2/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`getDropboxAccessToken ERROR: status ${response.status} - ${errorBody}`);
-      throw new Error(`Dropbox token refresh failed (${response.status}): ${errorBody}`);
+    const stored = await OAuthCredential.findOne({ provider: DROPBOX_OAUTH_PROVIDER_KEY }).lean();
+    if (stored?.refreshToken) {
+      const { accessToken } = await refreshAccessToken(stored.refreshToken);
+      return accessToken;
     }
-
-    const data = await response.json();
-    return data.access_token;
+    return await getDropboxAccessTokenViaEnv();
   } catch (error) {
     console.error(`getDropboxAccessToken ERROR: ${formatError(error)}`);
     throw error;
