@@ -1,15 +1,14 @@
-const { buildAuthorizationUrl, completeLogin } = require('../services/microsoftOAuthSetupService');
+const { buildAuthorizationUrl, completeLogin } = require('../services/shareFileOAuthSetupService');
 const { formatError } = require('../utils/formatError');
 const { renderOAuthResultPage, escapeHtml } = require('../utils/oauthPageRenderer');
 
-// @desc    Redirects the browser straight to Microsoft's login page - the
-//          entry point of the link sent to whoever needs to log in (see
-//          services/microsoftOAuthSetupService.js's top comment for why
-//          this exists instead of the local getRefreshToken.js script).
-//          Gated by a shared setup-secret so this isn't a fully public
-//          "anyone can (re-)authorize our mailbox integration" link.
-// @route   GET /oauth/microsoft/start?token=...
-const startMicrosoftLogin = async (req, res) => {
+// @desc    Redirects the browser straight to ShareFile's own login page -
+//          the entry point of the link sent to whoever owns the ShareFile
+//          account (see services/shareFileOAuthSetupService.js's top
+//          comment for why this replaces the old password-grant flow).
+//          Gated by the same shared setup-secret as the Microsoft flow.
+// @route   GET /oauth/sharefile/start?token=...
+const startShareFileLogin = async (req, res) => {
   const providedToken = req.query.token;
   const expectedToken = process.env.OAUTH_SETUP_SECRET;
 
@@ -29,28 +28,28 @@ const startMicrosoftLogin = async (req, res) => {
   }
 
   try {
-    const authUrl = await buildAuthorizationUrl();
+    const authUrl = buildAuthorizationUrl();
     res.redirect(authUrl);
   } catch (error) {
-    console.error('startMicrosoftLogin ERROR:', formatError(error));
+    console.error('startShareFileLogin ERROR:', formatError(error));
     renderOAuthResultPage(res, 500, {
       tone: 'error',
       heading: 'Could not start login',
-      message: 'Something went wrong preparing the Microsoft login page. Please tell the team and try again later.',
+      message: 'Something went wrong preparing the ShareFile login page. Please tell the team and try again later.',
     });
   }
 };
 
-// @desc    Where Microsoft redirects back to after login. Exchanges the
+// @desc    Where ShareFile redirects back to after login. Exchanges the
 //          authorization code for a refresh token and saves it to MongoDB
 //          (shared by the web service AND both cron jobs - no per-service
 //          env-var copying needed).
-// @route   GET /oauth/microsoft/callback
-const microsoftLoginCallback = async (req, res) => {
+// @route   GET /oauth/sharefile/callback
+const shareFileLoginCallback = async (req, res) => {
   const { code, error, error_description: errorDescription } = req.query;
 
   if (error) {
-    console.error(`microsoftLoginCallback: login failed - ${error}: ${errorDescription}`);
+    console.error(`shareFileLoginCallback: login failed - ${error}: ${errorDescription}`);
     return renderOAuthResultPage(res, 400, {
       tone: 'error',
       heading: 'Login was not completed',
@@ -69,14 +68,14 @@ const microsoftLoginCallback = async (req, res) => {
   }
 
   try {
-    const { loggedInAs } = await completeLogin(code);
+    await completeLogin(code);
     renderOAuthResultPage(res, 200, {
       tone: 'ok',
       heading: 'Login successful',
-      message: `${loggedInAs ? `Signed in as <strong>${escapeHtml(loggedInAs)}</strong>. ` : ''}This mailbox is now connected. You can close this tab.`,
+      message: 'Your ShareFile account is now connected. You can close this tab.',
     });
   } catch (err) {
-    console.error('microsoftLoginCallback ERROR:', formatError(err));
+    console.error('shareFileLoginCallback ERROR:', formatError(err));
     renderOAuthResultPage(res, 500, {
       tone: 'error',
       heading: 'Login could not be completed',
@@ -85,4 +84,4 @@ const microsoftLoginCallback = async (req, res) => {
   }
 };
 
-module.exports = { startMicrosoftLogin, microsoftLoginCallback };
+module.exports = { startShareFileLogin, shareFileLoginCallback };

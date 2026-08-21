@@ -2,57 +2,73 @@
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
+const OAuthCredential = require('../models/OAuthCredential');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
 const { joinFolderPath } = require('../utils/folderPath');
+const {
+  PROVIDER_KEY: SHAREFILE_OAUTH_PROVIDER_KEY,
+  refreshAccessToken,
+} = require('./shareFileOAuthSetupService');
 
-const getShareFileAccessToken = async () => {
-  const {
-    SHAREFILE_CLIENT_ID,
-    SHAREFILE_CLIENT_SECRET,
-    SHAREFILE_USERNAME,
-    SHAREFILE_PASSWORD,
-    SHAREFILE_SUBDOMAIN,
-  } = process.env;
-
-  if (
-    !SHAREFILE_CLIENT_ID ||
-    !SHAREFILE_CLIENT_SECRET ||
-    !SHAREFILE_USERNAME ||
-    !SHAREFILE_PASSWORD ||
-    !SHAREFILE_SUBDOMAIN
-  ) {
-    throw new Error(
-      'ShareFile credentials missing in .env (SHAREFILE_CLIENT_ID/SHAREFILE_CLIENT_SECRET/SHAREFILE_USERNAME/SHAREFILE_PASSWORD/SHAREFILE_SUBDOMAIN).'
-    );
-  }
-
+// PHASE-UI-14 — prefers the OAuth-login-obtained refresh token (see
+// shareFileOAuthSetupService.js / GET /oauth/sharefile/start) over the
+// older password-grant flow, if one has been saved to MongoDB - the OAuth
+// path never needs the account's actual password stored anywhere, and
+// generally survives a routine password change (a stored plaintext
+// password does not: every call re-sends it, so a change breaks the very
+// next scan). Falls back to SHAREFILE_USERNAME/PASSWORD for anyone who
+// hasn't completed the hosted login yet, so nothing breaks mid-migration.
+const getShareFileAccessTokenViaPassword = async () => {
+  const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
+    process.env;
 
   const authUrl = `https://${SHAREFILE_SUBDOMAIN}.sharefile.com/oauth/token`;
 
+  const body = new URLSearchParams({
+    grant_type: 'password',
+    client_id: SHAREFILE_CLIENT_ID,
+    client_secret: SHAREFILE_CLIENT_SECRET,
+    username: SHAREFILE_USERNAME,
+    password: SHAREFILE_PASSWORD,
+  });
+
+  const response = await fetch(authUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    console.error(`getShareFileAccessToken ERROR: status ${response.status} - ${errorBody}`);
+    throw new Error(`ShareFile authentication failed (${response.status}): ${errorBody}`);
+  }
+
+  const data = await response.json();
+  return { accessToken: data.access_token, subdomain: data.subdomain };
+};
+
+const getShareFileAccessToken = async () => {
+  const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
+    process.env;
+
+  if (!SHAREFILE_CLIENT_ID || !SHAREFILE_CLIENT_SECRET || !SHAREFILE_SUBDOMAIN) {
+    throw new Error('ShareFile credentials missing in .env (SHAREFILE_CLIENT_ID/SHAREFILE_CLIENT_SECRET/SHAREFILE_SUBDOMAIN).');
+  }
+
   try {
-    const body = new URLSearchParams({
-      grant_type: 'password',
-      client_id: SHAREFILE_CLIENT_ID,
-      client_secret: SHAREFILE_CLIENT_SECRET,
-      username: SHAREFILE_USERNAME,
-      password: SHAREFILE_PASSWORD,
-    });
-
-    const response = await fetch(authUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`getShareFileAccessToken ERROR: status ${response.status} - ${errorBody}`);
-      throw new Error(`ShareFile authentication failed (${response.status}): ${errorBody}`);
+    const stored = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
+    if (stored?.refreshToken) {
+      return await refreshAccessToken(stored.refreshToken);
     }
 
-    const data = await response.json();
-    return { accessToken: data.access_token, subdomain: data.subdomain };
+    if (!SHAREFILE_USERNAME || !SHAREFILE_PASSWORD) {
+      throw new Error(
+        'No ShareFile authorization available — either complete the hosted login at /oauth/sharefile/start, or set SHAREFILE_USERNAME/SHAREFILE_PASSWORD in .env.'
+      );
+    }
+    return await getShareFileAccessTokenViaPassword();
   } catch (error) {
     console.error(`getShareFileAccessToken ERROR: ${formatError(error)}`);
     throw error;
