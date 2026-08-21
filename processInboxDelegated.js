@@ -2,16 +2,24 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
 const { getRecentEmails, getEmailAttachments } = require('./services/graphService');
-const { getAccessTokenFromRefreshToken } = require('./services/delegatedAuthService');
+const { getAccessTokenFromRefreshToken, resolveMailboxEmail } = require('./services/delegatedAuthService');
 const { processEmail } = require('./services/emailProcessor');
 const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
 const EmailLog = require('./models/EmailLog');
 
 
 const processInboxDelegated = async (sinceTimestamp) => {
-  const mailboxEmail = process.env.DELEGATED_MAILBOX_EMAIL;
+  // DB-first (the hosted login's stored `loggedInAs`), falling back to the
+  // .env value - mirrors getAccessTokenFromRefreshToken()'s own DB-first
+  // pattern, so DELEGATED_MAILBOX_EMAIL isn't a hard .env requirement once a
+  // hosted login has been completed. This value is only used for the log
+  // line below - the actual Graph calls are scoped to "me", which already
+  // resolves to whichever account the access token belongs to.
+  const mailboxEmail = await resolveMailboxEmail();
   if (!mailboxEmail) {
-    throw new Error('DELEGATED_MAILBOX_EMAIL is not set in .env.');
+    throw new Error(
+      'No delegated mailbox email available — either set DELEGATED_MAILBOX_EMAIL in .env, or complete the hosted login at /oauth/microsoft/start (the signed-in account is then read from MongoDB automatically).'
+    );
   }
 
   const accessToken = await getAccessTokenFromRefreshToken();

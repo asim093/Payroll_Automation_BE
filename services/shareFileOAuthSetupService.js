@@ -1,18 +1,3 @@
-/**
- * PHASE-UI-14 — web-hosted ShareFile login flow, replacing the password-
- * grant approach (sharefileService.js sending SHAREFILE_USERNAME/PASSWORD
- * on every single API call) with a real OAuth Authorization Code flow:
- * the account owner logs in directly on ShareFile's own page, we never see
- * their password, and we get a refresh token instead - which (unlike a
- * stored plaintext password) generally keeps working across a routine
- * password change, and can be re-issued any time by clicking the login
- * link again, no code/config access needed.
- *
- * Mirrors microsoftOAuthSetupService.js's shape/pattern exactly. Refresh
- * tokens are saved to MongoDB (OAuthCredential, provider: 'sharefile') -
- * shared by the web service and both cron jobs, no per-service env-var
- * copying needed.
- */
 const OAuthCredential = require('../models/OAuthCredential');
 
 const PROVIDER_KEY = 'sharefile';
@@ -43,7 +28,6 @@ const getClientCredentials = () => {
   return { clientId: SHAREFILE_CLIENT_ID, clientSecret: SHAREFILE_CLIENT_SECRET };
 };
 
-// @returns the URL to send the browser to for login.
 const buildAuthorizationUrl = () => {
   const { clientId } = getClientCredentials();
   const params = new URLSearchParams({
@@ -58,7 +42,6 @@ const saveRefreshToken = async (refreshToken) => {
   await OAuthCredential.findOneAndUpdate({ provider: PROVIDER_KEY }, { refreshToken }, { upsert: true });
 };
 
-// Exchanges the authorization `code` ShareFile just redirected back with.
 const completeLogin = async (code) => {
   const { clientId, clientSecret } = getClientCredentials();
   const body = new URLSearchParams({

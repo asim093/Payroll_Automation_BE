@@ -2,16 +2,12 @@ const SystemStatus = require('../models/SystemStatus');
 const { processInboxDelegated } = require('../processInboxDelegated');
 const { processInbox } = require('../processInbox');
 const { runGuardedProcess } = require('./processRunner');
+const { isDelegatedConfigAvailable } = require('./delegatedAuthService');
 
 const PROCESS_KEY = 'mailSync';
 
-const hasDelegatedConfig = () =>
-  Boolean(
-    process.env.DELEGATED_REFRESH_TOKEN && process.env.DELEGATED_CLIENT_ID && process.env.DELEGATED_MAILBOX_EMAIL
-  );
-
 const runDelegatedFlow = async (sinceTimestamp) => {
-  if (!hasDelegatedConfig()) {
+  if (!(await isDelegatedConfigAvailable())) {
     console.log('[MAIL-SYNC] Delegated flow: DELEGATED_REFRESH_TOKEN/DELEGATED_CLIENT_ID/DELEGATED_MAILBOX_EMAIL not set - skipping.');
     return { success: true, skipped: true, message: 'Not configured - skipped' };
   }

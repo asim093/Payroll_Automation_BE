@@ -33,11 +33,7 @@ const getClientCredentials = () => {
   return { appKey: DROPBOX_APP_KEY, appSecret: DROPBOX_APP_SECRET };
 };
 
-// @returns the URL to send the browser to for login. token_access_type is
-// what makes Dropbox issue a long-lived refresh token instead of just a
-// short-lived access token - same param getDropboxRefreshToken.js uses,
-// just paired with a real redirect_uri here instead of the manual-copy-paste
-// no-redirect variant.
+
 const buildAuthorizationUrl = () => {
   const { appKey } = getClientCredentials();
   const params = new URLSearchParams({
@@ -53,9 +49,7 @@ const saveRefreshToken = async (refreshToken) => {
   await OAuthCredential.findOneAndUpdate({ provider: PROVIDER_KEY }, { refreshToken }, { upsert: true });
 };
 
-// Exchanges the authorization `code` Dropbox just redirected back with.
-// redirect_uri must be repeated here (matching the /authorize call) - same
-// OAuth2 rule ShareFile's completeLogin() follows.
+
 const completeLogin = async (code) => {
   const { appKey, appSecret } = getClientCredentials();
   const body = new URLSearchParams({

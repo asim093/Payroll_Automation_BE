@@ -1,19 +1,3 @@
-/**
- * ONE-TIME MANUAL LOGIN SCRIPT
- * ------------------------------------------------------------------------
- * Gets a long-lived Dropbox refresh token (via the "offline access" OAuth2
- * flow) so uploadFileToDropbox() never needs a manually-pasted short-lived
- * access token again — see dropboxService.getDropboxAccessToken(), which
- * exchanges this refresh token for a fresh access token automatically on
- * every call.
- *
- * Run with `node getDropboxRefreshToken.js`, open the printed URL in a
- * browser, log in, and paste the authorization code Dropbox shows you back
- * into this terminal. No redirect URI/local server needed — Dropbox's
- * "offline access" flow without a redirect_uri just displays the code on
- * their own page for manual copy-paste.
- * ------------------------------------------------------------------------
- */
 require('dotenv').config();
 const readline = require('readline');
 

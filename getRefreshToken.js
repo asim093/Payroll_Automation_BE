@@ -1,27 +1,9 @@
-/**
- * ONE-TIME MANUAL LOGIN SCRIPT
- * ------------------------------------------------------------------------
- * Runs the Authorization Code Flow (MSAL PublicClientApplication) against
- * "common" so a personal Microsoft account (e.g. outlook.com) can log in —
- * this is separate from, and parallel to, the client-credentials flow in
- * test-auth.js / graphService.js, which only works for org accounts.
- *
- * Run this with `node getRefreshToken.js`, then open the printed URL in a
- * browser and log in manually. This script starts a local server to catch
- * the redirect, exchanges the auth code for tokens, and prints the refresh
- * token so it can be copied into .env as DELEGATED_REFRESH_TOKEN once.
- * After that, delegatedAuthService.js uses the saved refresh token to get
- * new access tokens without any further manual login.
- * ------------------------------------------------------------------------
- */
 require('dotenv').config();
 const http = require('http');
 const { URL } = require('url');
 const { PublicClientApplication } = require('@azure/msal-node');
 
-// MailboxSettings.ReadWrite is needed for graphService.ensureCategoryExists()
-// (GET/POST /outlook/masterCategories) — Mail.Read/Mail.ReadWrite alone
-// cover messages themselves but not mailbox-level settings like categories.
+
 const SCOPES = ['Mail.Read', 'Mail.ReadWrite', 'MailboxSettings.ReadWrite', 'offline_access'];
 
 const redirectUri = process.env.REDIRECT_URI;

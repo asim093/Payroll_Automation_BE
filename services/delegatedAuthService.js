@@ -12,15 +12,25 @@ const pca = new PublicClientApplication({
   },
 });
 
-// PHASE-UI-13 — DB-stored token (from the web-hosted login flow - see
-// microsoftOAuthSetupService.js) wins if present, since it represents the
-// most recently (re-)authorized login; falls back to the .env value for
-// anyone still using the local getRefreshToken.js script. Checked fresh on
-// every call (not cached) so a re-login while the app is already running
-// takes effect on the very next call, no restart needed.
+
 const resolveRefreshToken = async () => {
   const stored = await OAuthCredential.findOne({ provider: PROVIDER_KEY }).lean();
   return stored?.refreshToken || process.env.DELEGATED_REFRESH_TOKEN;
+};
+
+
+const resolveMailboxEmail = async () => {
+  const stored = await OAuthCredential.findOne({ provider: PROVIDER_KEY }).lean();
+  return stored?.loggedInAs || process.env.DELEGATED_MAILBOX_EMAIL || null;
+};
+
+
+const isDelegatedConfigAvailable = async () => {
+  if (!process.env.DELEGATED_CLIENT_ID) return false;
+  const stored = await OAuthCredential.findOne({ provider: PROVIDER_KEY }).lean();
+  const hasRefreshToken = Boolean(stored?.refreshToken || process.env.DELEGATED_REFRESH_TOKEN);
+  const hasMailboxEmail = Boolean(stored?.loggedInAs || process.env.DELEGATED_MAILBOX_EMAIL);
+  return hasRefreshToken && hasMailboxEmail;
 };
 
 const getAccessTokenFromRefreshToken = async () => {
@@ -45,4 +55,4 @@ const getAccessTokenFromRefreshToken = async () => {
   }
 };
 
-module.exports = { getAccessTokenFromRefreshToken };
+module.exports = { getAccessTokenFromRefreshToken, resolveMailboxEmail, isDelegatedConfigAvailable };

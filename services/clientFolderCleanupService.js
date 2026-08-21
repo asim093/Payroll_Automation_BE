@@ -4,11 +4,8 @@ const { joinFolderPath } = require('../utils/folderPath');
 const { deleteDropboxFolder } = require('./dropboxService');
 const { deleteShareFileFolder } = require('./sharefileService');
 const { deleteMailFolder } = require('./graphService');
-const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+const { getAccessTokenFromRefreshToken, isDelegatedConfigAvailable } = require('./delegatedAuthService');
 const { formatError } = require('../utils/formatError');
-
-const hasDelegatedConfig = () =>
-  Boolean(process.env.DELEGATED_REFRESH_TOKEN && process.env.DELEGATED_CLIENT_ID && process.env.DELEGATED_MAILBOX_EMAIL);
 
 
 const deleteClientFolders = async (client) => {
@@ -39,8 +36,8 @@ const deleteClientFolders = async (client) => {
     warnings.push(`ShareFile: could not delete the folder automatically, please remove it manually. (${message})`);
   }
 
- 
-  if (hasDelegatedConfig() && client.outlookFolderId) {
+
+  if ((await isDelegatedConfigAvailable()) && client.outlookFolderId) {
     try {
       const accessToken = await getAccessTokenFromRefreshToken();
       await deleteMailFolder(client.outlookFolderId, accessToken, undefined);

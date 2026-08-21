@@ -5,11 +5,8 @@ const { joinFolderPath } = require('../utils/folderPath');
 const { ensureDropboxFolderExists } = require('./dropboxService');
 const { ensureShareFileFolderExists } = require('./sharefileService');
 const { findOrCreateOutlookFolder } = require('./graphService');
-const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+const { getAccessTokenFromRefreshToken, isDelegatedConfigAvailable } = require('./delegatedAuthService');
 const { formatError } = require('../utils/formatError');
-
-const hasDelegatedConfig = () =>
-  Boolean(process.env.DELEGATED_REFRESH_TOKEN && process.env.DELEGATED_CLIENT_ID && process.env.DELEGATED_MAILBOX_EMAIL);
 
 const normalizePathSegment = (value) => String(value || '').trim().toLowerCase();
 
@@ -74,8 +71,8 @@ const setupClientFolders = async (client) => {
     warnings.push(`ShareFile: could not create the folder automatically, please check manually. (${message})`);
   }
 
- 
-  if (hasDelegatedConfig()) {
+
+  if (await isDelegatedConfigAvailable()) {
     try {
       const resolvedPath = joinFolderPath(outlookRootPath, client.name);
       const accessToken = await getAccessTokenFromRefreshToken();
