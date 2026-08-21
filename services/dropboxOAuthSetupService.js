@@ -1,16 +1,3 @@
-/**
- * PHASE-UI-15 — web-hosted Dropbox login flow, mirroring
- * microsoftOAuthSetupService.js / shareFileOAuthSetupService.js's exact
- * shape/pattern for consistency (same "open a link, log in, click Allow"
- * experience across all three integrations).
- *
- * This does NOT replace getDropboxRefreshToken.js (the local manual-copy-
- * paste script still works and is untouched) - it's an additional, hosted
- * alternative for whoever owns the Dropbox account when they aren't sitting
- * at a machine that can run a local script. Refresh tokens are saved to
- * MongoDB (OAuthCredential, provider: 'dropbox') - shared by the web
- * service and both cron jobs, no per-service env-var copying needed.
- */
 const OAuthCredential = require('../models/OAuthCredential');
 
 const PROVIDER_KEY = 'dropbox';
@@ -33,7 +20,6 @@ const getClientCredentials = () => {
   return { appKey: DROPBOX_APP_KEY, appSecret: DROPBOX_APP_SECRET };
 };
 
-
 const buildAuthorizationUrl = () => {
   const { appKey } = getClientCredentials();
   const params = new URLSearchParams({
@@ -48,7 +34,6 @@ const buildAuthorizationUrl = () => {
 const saveRefreshToken = async (refreshToken) => {
   await OAuthCredential.findOneAndUpdate({ provider: PROVIDER_KEY }, { refreshToken }, { upsert: true });
 };
-
 
 const completeLogin = async (code) => {
   const { appKey, appSecret } = getClientCredentials();
@@ -73,17 +58,9 @@ const completeLogin = async (code) => {
   }
 
   await saveRefreshToken(data.refresh_token);
-  // Dropbox's token response doesn't include the account's email/name
-  // directly - nothing meaningful to show here, the result page just
-  // confirms success generically (same as ShareFile's callback).
   return { loggedInAs: null };
 };
 
-// Exchanges a stored refresh token for a fresh access token - called on
-// every Dropbox API operation (see dropboxService.js's getDropboxAccessToken()).
-// Dropbox refresh tokens don't rotate/expire on use, but the response is
-// checked defensively anyway in case that ever changes.
-// @returns { accessToken, expiresIn }
 const refreshAccessToken = async (refreshToken) => {
   const { appKey, appSecret } = getClientCredentials();
   const body = new URLSearchParams({
@@ -109,9 +86,6 @@ const refreshAccessToken = async (refreshToken) => {
     await saveRefreshToken(data.refresh_token);
   }
 
-  // expiresIn (seconds) lets callers cache this access token instead of
-  // re-exchanging the refresh token on every single API call - see
-  // dropboxService.js's getDropboxAccessToken() cache.
   return { accessToken: data.access_token, expiresIn: data.expires_in };
 };
 

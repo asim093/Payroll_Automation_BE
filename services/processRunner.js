@@ -1,8 +1,7 @@
 const SystemStatus = require('../models/SystemStatus');
 const { endActivity } = require('./scanActivityService');
 
-
-const LOCK_STALE_MS = 15 * 60 * 1000; // 15 minutes
+const LOCK_STALE_MS = 15 * 60 * 1000;
 
 const runGuardedProcess = async (processKey, work) => {
   const staleThreshold = new Date(Date.now() - LOCK_STALE_MS);

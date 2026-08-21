@@ -16,7 +16,7 @@ const saveLikeTheRealServicesDo = async (refreshToken, loggedInAs) => {
 (async () => {
   await connectDB();
   try {
-    await OAuthCredential.deleteMany({ provider: TEST_PROVIDER }); // clean slate
+    await OAuthCredential.deleteMany({ provider: TEST_PROVIDER });
 
     console.log('=== Simulated login #1 ===');
     await saveLikeTheRealServicesDo('fake-refresh-token-AAA', 'user1@example.com');
@@ -38,7 +38,7 @@ const saveLikeTheRealServicesDo = async (refreshToken, loggedInAs) => {
     console.log('Documents for this provider:', docs.length, docs.length === 1 ? '✅ still just one document' : '❌ FAIL - duplicate created');
     console.log('  refreshToken:', docs[0]?.refreshToken, '| loggedInAs:', docs[0]?.loggedInAs);
 
-    await OAuthCredential.deleteMany({ provider: TEST_PROVIDER }); // cleanup
+    await OAuthCredential.deleteMany({ provider: TEST_PROVIDER });
     console.log('\nCleaned up test provider documents. Real provider records (microsoft-delegated/dropbox/sharefile) untouched throughout.');
   } finally {
     await mongoose.connection.close();

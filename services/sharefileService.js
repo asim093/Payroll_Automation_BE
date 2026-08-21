@@ -11,14 +11,6 @@ const {
   refreshAccessToken,
 } = require('./shareFileOAuthSetupService');
 
-// PHASE-UI-14 — prefers the OAuth-login-obtained refresh token (see
-// shareFileOAuthSetupService.js / GET /oauth/sharefile/start) over the
-// older password-grant flow, if one has been saved to MongoDB - the OAuth
-// path never needs the account's actual password stored anywhere, and
-// generally survives a routine password change (a stored plaintext
-// password does not: every call re-sends it, so a change breaks the very
-// next scan). Falls back to SHAREFILE_USERNAME/PASSWORD for anyone who
-// hasn't completed the hosted login yet, so nothing breaks mid-migration.
 const getShareFileAccessTokenViaPassword = async () => {
   const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
     process.env;
@@ -49,22 +41,9 @@ const getShareFileAccessTokenViaPassword = async () => {
   return { accessToken: data.access_token, subdomain: data.subdomain, expiresIn: data.expires_in };
 };
 
-// PHASE-UI-16 — in-memory cache so a single scan touching multiple client
-// folders (processShareFileScan.js loops over every active client) doesn't
-// re-exchange the refresh/password token on every single call - before this,
-// a 6-client scan meant 6+ separate token-exchange HTTP round-trips (one per
-// client, plus one more for the orphan-scan) AND 6+ redundant MongoDB writes
-// (refreshAccessToken() re-saves the refresh token on every exchange).
-// Scoped to this process only (module-level variable) - a cron run is a
-// single process from start to exit, so this already eliminates nearly all
-// the waste within one run; the web service is long-running, so it benefits
-// even more, reusing one token across many unrelated requests until it
-// actually expires. A re-login while a cached token is still valid is only
-// picked up once that token naturally expires - an acceptable bounded delay
-// (well under ShareFile's own ~1hr token lifetime), not a correctness issue.
-let cachedToken = null; // { accessToken, subdomain, expiresAt }
-const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000; // refresh a bit early, never right at the edge
-const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000; // conservative fallback if a response ever omits expires_in
+let cachedToken = null;
+const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
+const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
 
 const getShareFileAccessToken = async () => {
   if (cachedToken && cachedToken.expiresAt > Date.now()) {
@@ -105,20 +84,6 @@ const getShareFileAccessToken = async () => {
   }
 };
 
-
-// Root container everything below is created/looked-up under. ShareFile's
-// `home` alias resolves to the AUTHENTICATED ACCOUNT's own "Personal
-// Folders" - private to this one login, invisible to anyone else in the
-// organization. That was the original (wrong) choice here, and the actual
-// bug this comment now documents: every client folder/file this app ever
-// created was only ever visible to this one ShareFile service account.
-//
-// `allshared` resolves to "Shared Folders" instead - the account-wide tree
-// every ShareFile user with access can see (confirmed live: this account
-// has write access to it - see the folder-structure migration this fix
-// shipped with). This is also what "S:\Shared Folders\..." refers to in
-// ShareFile's Drive-mapping tool, matching the path format the client's
-// own notifications describe.
 const SHAREFILE_ROOT_ALIAS = 'allshared';
 
 const getShareFileContext = async () => {
@@ -250,7 +215,6 @@ const downloadFileContentById = async (fileId) => {
   }
 };
 
-
 const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
   try {
     const files = await listFilesInShareFileFolder(clientFolderSegment);
@@ -258,7 +222,6 @@ const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
       throw new Error(`No files found in ShareFile folder for "${clientFolderSegment}"`);
     }
 
-    
     const getTimestamp = (item) => new Date(item.CreationDate || item.ProgenyEditDate || 0).getTime();
     files.sort((a, b) => getTimestamp(b) - getTimestamp(a));
 
@@ -275,7 +238,6 @@ const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
     throw error;
   }
 };
-
 
 const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
   try {
@@ -315,7 +277,6 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
     throw error;
   }
 };
-
 
 const scanShareFileForNewFiles = async () => {
   const activeClients = await Client.find({ status: 'active' });
@@ -399,8 +360,7 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
     .map((part) => part.trim())
     .filter(Boolean);
 
-  if (expectedSegments.length < 2) return 0; // Nothing nested to check.
-
+  if (expectedSegments.length < 2) return 0;
 
   let currentId = accountRootId;
   let currentPath = '';
@@ -409,7 +369,7 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
       const rootResponse = await fetch(`${apiBase}/Items(${accountRootId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`, {
         headers: authHeaders,
       });
-      if (!rootResponse.ok) return 0; 
+      if (!rootResponse.ok) return 0;
       const rootFolder = await rootResponse.json();
       currentId = rootFolder.Id;
       currentPath = shareFileRootPath;
@@ -431,12 +391,11 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
       return newOrphans;
     }
 
-
     if (level > 0) {
       for (const child of children) {
         const name = child.Name || child.FileName || '(unnamed)';
         if (!isFileItem(child) && name.trim().toLowerCase() === expectedName.trim().toLowerCase()) {
-          continue; // The recognized branch - handled by continuing the walk below.
+          continue;
         }
         const created = await recordUnmatchedItem(child, `${currentPath}/${name}`);
         if (created) newOrphans++;
@@ -446,7 +405,7 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
     const match = children.find(
       (child) => !isFileItem(child) && (child.Name || '').trim().toLowerCase() === expectedName.trim().toLowerCase()
     );
-    if (!match) return newOrphans; // Expected chain breaks here - nothing deeper to check.
+    if (!match) return newOrphans;
 
     currentId = match.Id;
     currentPath = `${currentPath}/${expectedName}`;
@@ -476,7 +435,6 @@ const scanShareFileRootForUnmatchedItems = async () => {
   const children = await listChildren(rootId, apiBase, authHeaders);
 
   const clients = await Client.find();
-
 
   const folderNameToClient = new Map();
   clients.forEach((client) => {
@@ -515,7 +473,6 @@ const scanShareFileRootForUnmatchedItems = async () => {
   return { scanned: children.length, newOrphans, autoResolved };
 };
 
-
 const resolveShareFileFolderId = async (fullPath) => {
   const segments = fullPath
     .split('/')
@@ -542,7 +499,6 @@ const resolveShareFileFolderId = async (fullPath) => {
   return currentId;
 };
 
-
 const deleteShareFileFolder = async (fullPath) => {
   try {
     const { apiBase, authHeaders } = await getShareFileContext();
@@ -567,7 +523,6 @@ const deleteShareFileFolder = async (fullPath) => {
     throw error;
   }
 };
-
 
 const deleteShareFileItemById = async (itemId) => {
   const { apiBase, authHeaders } = await getShareFileContext();

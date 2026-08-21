@@ -13,7 +13,6 @@ const {
 
 const sanitizeForPath = (value) => String(value).replace(/[\\/:*?"<>|]/g, '_').trim();
 
-
 const getDropboxAccessTokenViaEnv = async () => {
   const refreshToken = process.env.DROPBOX_REFRESH_TOKEN;
   const appKey = process.env.DROPBOX_APP_KEY;
@@ -51,21 +50,10 @@ const getDropboxAccessTokenViaEnv = async () => {
   return { accessToken: data.access_token, expiresIn: data.expires_in };
 };
 
-// PHASE-UI-16 — in-memory cache, same reasoning as sharefileService.js's
-// getShareFileAccessToken() cache: a single ShareFile-Bridge scan calls
-// getDropboxAccessToken() from several places (mirror-upload per client,
-// the orphan-scan, etc.) - without this, each of those re-exchanged the
-// refresh token from scratch. Module-level, so it also carries over between
-// unrelated calls on the long-running web service.
-let cachedToken = null; // { accessToken, expiresAt }
-const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000; // refresh a bit early, never right at the edge
-const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000; // conservative fallback if a response ever omits expires_in
+let cachedToken = null;
+const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
+const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
 
-// Checks MongoDB (OAuthCredential, provider: 'dropbox') first - a refresh
-// token saved there means someone completed the hosted /oauth/dropbox/start
-// login. Falls back to the old .env-based DROPBOX_REFRESH_TOKEN otherwise.
-// Same DB-first-then-.env pattern as delegatedAuthService.js and
-// sharefileService.js's getShareFileAccessToken().
 const getDropboxAccessToken = async () => {
   if (cachedToken && cachedToken.expiresAt > Date.now()) {
     return cachedToken.accessToken;
@@ -93,7 +81,7 @@ const getDropboxAccessToken = async () => {
 const resolveDropboxFolderPath = async (clientFolderSegment) => {
   const { dropboxRootPath } = await getSettings();
   const resolvedFolder = joinFolderPath(dropboxRootPath, clientFolderSegment);
-  
+
   const folderSegments = resolvedFolder.split('/').map(sanitizeForPath).filter(Boolean);
   return `/${folderSegments.join('/')}`;
 };
@@ -173,7 +161,6 @@ const deleteDropboxFolder = async (clientFolderSegment) => {
   }
 };
 
-
 const scanDropboxRootForUnmatchedItems = async () => {
   const { dropboxRootPath } = await getSettings();
   const accessToken = await getDropboxAccessToken();
@@ -221,7 +208,6 @@ const scanDropboxRootForUnmatchedItems = async () => {
       continue;
     }
 
-  
     let isEmpty = false;
     if (isFolder) {
       const childResponse = await dbx.filesListFolder({ path: entry.path_lower });
@@ -257,7 +243,6 @@ const scanDropboxRootForUnmatchedItems = async () => {
   return { scanned: children.length, newOrphans, autoResolved };
 };
 
-
 const deleteDropboxItemByPath = async (path) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = new Dropbox({ accessToken, fetch });
@@ -274,7 +259,6 @@ const deleteDropboxItemByPath = async (path) => {
     throw error;
   }
 };
-
 
 const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, fileName) => {
   const accessToken = await getDropboxAccessToken();

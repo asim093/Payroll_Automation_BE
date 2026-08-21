@@ -23,8 +23,6 @@ if (!clientId) {
 const pca = new PublicClientApplication({
   auth: {
     clientId,
-    // "common" (not the org's TENANT_ID) so personal Microsoft accounts
-    // can authenticate too, not just accounts in our own tenant.
     authority: 'https://login.microsoftonline.com/common',
   },
 });
@@ -33,12 +31,6 @@ const redirectUrlObj = new URL(redirectUri);
 const PORT = Number(redirectUrlObj.port) || 3000;
 const CALLBACK_PATH = redirectUrlObj.pathname;
 
-/**
- * acquireTokenByCode()'s return value never includes the refresh token
- * directly (MSAL manages it internally) — it's only ever written into the
- * token cache, so for this one-time manual flow we read it back out of the
- * serialized cache ourselves.
- */
 function extractRefreshTokenFromCache(client) {
   const cache = JSON.parse(client.getTokenCache().serialize());
   const refreshTokens = cache.RefreshToken || {};
@@ -90,7 +82,7 @@ const server = http.createServer(async (req, res) => {
       console.log(refreshToken);
       console.log('---------------------');
       console.log(
-        '\nIs token ko .env mein DELEGATED_REFRESH_TOKEN naam se save karein, kisi ke sath share na karein.'
+        '\nSave this token in .env as DELEGATED_REFRESH_TOKEN. Do not share it with anyone.'
       );
     } else {
       console.error(

@@ -2,12 +2,6 @@ const { buildAuthorizationUrl, completeLogin } = require('../services/shareFileO
 const { formatError } = require('../utils/formatError');
 const { renderOAuthResultPage, escapeHtml } = require('../utils/oauthPageRenderer');
 
-// @desc    Redirects the browser straight to ShareFile's own login page -
-//          the entry point of the link sent to whoever owns the ShareFile
-//          account (see services/shareFileOAuthSetupService.js's top
-//          comment for why this replaces the old password-grant flow).
-//          Gated by the same shared setup-secret as the Microsoft flow.
-// @route   GET /oauth/sharefile/start?token=...
 const startShareFileLogin = async (req, res) => {
   const providedToken = req.query.token;
   const expectedToken = process.env.OAUTH_SETUP_SECRET;
@@ -40,11 +34,6 @@ const startShareFileLogin = async (req, res) => {
   }
 };
 
-// @desc    Where ShareFile redirects back to after login. Exchanges the
-//          authorization code for a refresh token and saves it to MongoDB
-//          (shared by the web service AND both cron jobs - no per-service
-//          env-var copying needed).
-// @route   GET /oauth/sharefile/callback
 const shareFileLoginCallback = async (req, res) => {
   const { code, error, error_description: errorDescription } = req.query;
 

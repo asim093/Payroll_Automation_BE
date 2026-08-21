@@ -1,25 +1,3 @@
-/**
- * PHASE-UI-3 — inserts realistic-looking demo EmailLog/FileLog rows so the
- * new dashboard (Process Cards, Recent Activity feed, filters) can be
- * screenshotted/demoed with actual volume instead of an empty or
- * single-test-client dataset.
- *
- * Every row this script inserts gets isDemoData: true (see the matching
- * field added to models/EmailLog.js and models/FileLog.js) — that's the
- * ONLY thing that distinguishes it from real data, and it's what
- * scripts/removeDemoActivity.js keys off of to clean back up afterward.
- * Nothing here ever touches a row that doesn't already have that flag.
- *
- * Prefers linking demo rows to REAL clients already in the database (so
- * Client Profile pages/counts look populated too) — falls back to a
- * generic name if none exist, with no client link (shows as "N/A", same
- * as a genuinely unmatched item would).
- *
- * USAGE:
- *   node scripts/seedDemoActivity.js         -> prompts for confirmation
- *   node scripts/seedDemoActivity.js --yes    -> skips the prompt (for
- *                                                scripted/CI use)
- */
 require('dotenv').config();
 const mongoose = require('mongoose');
 const readline = require('readline');
@@ -30,8 +8,6 @@ const Client = require('../models/Client');
 
 const SKIP_CONFIRM = process.argv.includes('--yes') || process.argv.includes('-y');
 
-// 18 of each => 36 total, inside both "15-20 per sync-type" and
-// "30-40 total" from the spec.
 const ENTRIES_PER_TYPE = 18;
 const MAX_DAYS_AGO = 4;
 
@@ -83,9 +59,6 @@ const pick = (arr) => arr[randomInt(0, arr.length - 1)];
 const randomPastDate = (maxDaysAgo = MAX_DAYS_AGO) =>
   new Date(Date.now() - randomInt(0, maxDaysAgo * 24 * 60 * 60 * 1000));
 
-// Weighted so most demo rows look like a healthy system (mostly success),
-// with a believable minority needing review or failed - enough to exercise
-// every StatusBadge color/icon without looking like everything is broken.
 const weightedOutcome = () => {
   const roll = Math.random();
   if (roll < 0.72) return 'success';
@@ -114,8 +87,6 @@ const buildEmailDocs = (realClients) =>
       sender: `${pick(SENDER_LOCAL_PARTS)}@${domain}`,
       subject: pick(SUBJECTS),
       receivedAt: randomPastDate(),
-      // needs_review rows deliberately have no matched client - that's what
-      // "needs review" means for a real one too.
       matchedClientId: status === 'needs_review' ? undefined : client?._id,
       status,
       categoryAssigned: status === 'processed',
@@ -131,9 +102,6 @@ const buildEmailDocs = (realClients) =>
 const buildFileDocs = (realClients) =>
   Array.from({ length: ENTRIES_PER_TYPE }, () => {
     const client = realClients.length > 0 ? pick(realClients) : null;
-    // Mixed source so both Mail Sync (outlook attachments) and ShareFile
-    // Bridge (sharefile-discovered files) show demo volume - see
-    // utils/activityFeed.js's process split, which keys off this field.
     const source = Math.random() < 0.55 ? 'sharefile' : 'outlook';
     const outcome = weightedOutcome();
     const status = outcome === 'success' ? 'moved' : outcome;

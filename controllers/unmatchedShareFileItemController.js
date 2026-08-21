@@ -5,10 +5,6 @@ const { uploadFileToDropbox } = require('../services/dropboxService');
 const { downloadFileContentById, deleteShareFileItemById } = require('../services/sharefileService');
 const { formatError } = require('../utils/formatError');
 
-// @desc    List unmatched ShareFile items (unresolved by default - pass
-//          ?all=true for resolved/dismissed ones too, same convention as
-//          GET /api/review-queue).
-// @route   GET /api/unmatched-sharefile-items
 exports.getAllUnmatchedItems = async (req, res, next) => {
   try {
     const filter = req.query.all === 'true' ? {} : { status: 'unresolved' };
@@ -19,20 +15,6 @@ exports.getAllUnmatchedItems = async (req, res, next) => {
   }
 };
 
-// @desc    Resolve an unmatched item by assigning it to a client.
-//          - "folder" items: the folder's own name becomes that client's
-//            shareFilePath going forward (this is a NEW top-level folder
-//            found sitting directly under the ShareFile root, so its name
-//            IS the client's full ShareFile path from here on) - no files
-//            are moved or copied, this just corrects where our system looks
-//            from now on. The regular per-client scan will pick up
-//            whatever's already inside it on its next cycle.
-//          - "file" items: downloaded from ShareFile and saved to Dropbox
-//            immediately (same pipeline processShareFileScan.js uses for
-//            already-known files), since a loose file has no "folder" to
-//            just start recognizing - it has to actually be filed somewhere.
-// @route   PATCH /api/unmatched-sharefile-items/:id/resolve
-// @body    { clientId }
 exports.resolveUnmatchedItem = async (req, res, next) => {
   try {
     const { clientId } = req.body;
@@ -89,10 +71,6 @@ exports.resolveUnmatchedItem = async (req, res, next) => {
   }
 };
 
-// @desc    Dismiss an unmatched item (e.g. it's a legitimate non-client
-//          folder like "Templates") so it stops being flagged on every
-//          future scan, without assigning it to any client.
-// @route   PATCH /api/unmatched-sharefile-items/:id/dismiss
 exports.dismissUnmatchedItem = async (req, res, next) => {
   try {
     const item = await UnmatchedShareFileItem.findById(req.params.id);
@@ -111,14 +89,6 @@ exports.dismissUnmatchedItem = async (req, res, next) => {
   }
 };
 
-// @desc    Permanently delete an unmatched folder from ShareFile itself
-//          (not just dismiss the flag) - only ever offered for EMPTY
-//          folders (see UnmatchedShareFileItem.isEmpty), typically a
-//          leftover from a client's path being changed. Refuses to run on
-//          anything else, since deleting a non-empty folder or a loose
-//          file would destroy real content this endpoint was never meant
-//          to touch.
-// @route   DELETE /api/unmatched-sharefile-items/:id
 exports.deleteUnmatchedItem = async (req, res, next) => {
   try {
     const item = await UnmatchedShareFileItem.findById(req.params.id);

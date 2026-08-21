@@ -1,17 +1,3 @@
-// Shared HTML "result page" renderer for the web-hosted OAuth login flows
-// (see controllers/oauthController.js for Microsoft, and
-// controllers/shareFileOAuthController.js for ShareFile) - both land the
-// browser on a plain result page after login (success or failure) instead
-// of a raw JSON API response, since the person landing here is very likely
-// someone outside the team (the client, logging into their own mailbox or
-// ShareFile account), not a developer.
-//
-// These /callback routes are unauthenticated (the provider hits them with
-// query params after a real login, but anyone could also hit them directly
-// with crafted query params, e.g. an error description) - escape anything
-// dynamic before it's interpolated into `message`. `heading` is always a
-// literal string from the caller, escaped here regardless as cheap
-// insurance.
 const escapeHtml = (value) =>
   String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',

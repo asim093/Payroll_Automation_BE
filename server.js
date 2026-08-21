@@ -37,10 +37,7 @@ app.use('/api/unmatched-dropbox-items', unmatchedDropboxItemRoutes);
 app.use('/api/auth', authRoutes);
 
 app.use('/internal', internalRoutes);
-// PHASE-UI-13 — web-hosted Microsoft login flow for remote mailbox
-// re-authorization (see services/microsoftOAuthSetupService.js). Not under
-// /api - this is a browser-navigated flow (redirects, an HTML result page),
-// not a JSON API.
+
 app.use('/oauth', oauthRoutes);
 
 app.get('/', (req, res) => {

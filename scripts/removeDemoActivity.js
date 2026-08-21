@@ -1,13 +1,3 @@
-/**
- * PHASE-UI-3 — cleanup counterpart of scripts/seedDemoActivity.js. Deletes
- * every EmailLog/FileLog row flagged isDemoData: true and nothing else -
- * real data (which never has that field set) is untouched regardless of
- * how it compares in name/date/status to the demo rows.
- *
- * USAGE:
- *   node scripts/removeDemoActivity.js        -> prompts for confirmation
- *   node scripts/removeDemoActivity.js --yes   -> skips the prompt
- */
 require('dotenv').config();
 const mongoose = require('mongoose');
 const readline = require('readline');

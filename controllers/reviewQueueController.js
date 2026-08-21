@@ -9,7 +9,6 @@ const { completeFileProcessing } = require('../services/emailProcessor');
 const VALID_TYPES = ['email', 'file'];
 const VALID_REASONS = ['unknown_sender', 'no_match', 'ambiguous', 'client_inactive', 'new_sender_domain_match'];
 
-
 exports.createReviewQueueEntry = async (req, res, next) => {
   try {
     const { type, referenceId, reason } = req.body;
@@ -30,7 +29,6 @@ exports.createReviewQueueEntry = async (req, res, next) => {
     next(error);
   }
 };
-
 
 const attachRelatedData = async (entries) => {
   const emailIds = entries.filter((entry) => entry.type === 'email').map((entry) => entry.referenceId);
@@ -71,7 +69,6 @@ const attachRelatedData = async (entries) => {
   });
 };
 
-
 exports.getAllReviewQueueEntries = async (req, res, next) => {
   try {
     const filter = req.query.all === 'true' ? {} : { resolvedClientId: null };
@@ -85,7 +82,6 @@ exports.getAllReviewQueueEntries = async (req, res, next) => {
     next(error);
   }
 };
-
 
 exports.getReviewQueueEntryById = async (req, res, next) => {
   try {
@@ -103,7 +99,6 @@ exports.getReviewQueueEntryById = async (req, res, next) => {
   }
 };
 
-
 exports.updateReviewQueueEntry = async (req, res, next) => {
   try {
     const entry = await ReviewQueue.findByIdAndUpdate(req.params.id, req.body, {
@@ -119,17 +114,6 @@ exports.updateReviewQueueEntry = async (req, res, next) => {
   }
 };
 
-
-// Atomically marks a review item as resolved-by-this-client BEFORE any real
-// work starts - findOneAndUpdate with resolvedClientId:null as part of the
-// query is a compare-and-swap: only one caller can ever win it, even if a
-// single-resolve and a bulk-resolve (or two bulk-resolves from different
-// tabs) race each other for the exact same item. Without this, both could
-// pass a plain "is this already resolved" check before either had saved,
-// and the same email/file would get reprocessed twice. Reverted via
-// releaseReviewItemClaim() if the actual processing then fails, so a
-// failed attempt still leaves the item resolvable again rather than stuck
-// "claimed" forever.
 const claimReviewItem = async (reviewItemId, client) =>
   ReviewQueue.findOneAndUpdate(
     { _id: reviewItemId, resolvedClientId: null },
@@ -167,7 +151,6 @@ const resolveOneReviewItem = async (reviewItem, client) => {
         }
       }
 
-   
       const graphAttachments = await getEmailAttachments(mailboxEmail, emailLog.messageId, accessToken);
       const attachments = (graphAttachments || [])
         .filter((attachment) => attachment.contentBytes)
@@ -196,8 +179,6 @@ const resolveOneReviewItem = async (reviewItem, client) => {
       emailLog.status = 'failed';
       emailLog.processingError = processingError.message;
       await emailLog.save();
-      // Release the claim so this item stays resolvable - a failed attempt
-      // shouldn't permanently lock it as "already resolved".
       await releaseReviewItemClaim(reviewItem._id);
       return { error: processingError.message };
     }
@@ -213,7 +194,6 @@ const resolveOneReviewItem = async (reviewItem, client) => {
 
   return { error: `Unknown review-item type "${reviewItem.type}"` };
 };
-
 
 exports.resolveReviewItem = async (req, res, next) => {
   try {
@@ -244,7 +224,6 @@ exports.resolveReviewItem = async (req, res, next) => {
   }
 };
 
-
 exports.bulkResolveReviewItems = async (req, res, next) => {
   try {
     const { entryIds, clientId } = req.body;
@@ -267,9 +246,6 @@ exports.bulkResolveReviewItems = async (req, res, next) => {
         results.push({ entryId, success: false, error: 'Review queue entry not found' });
         continue;
       }
-      // No pre-check here anymore - resolveOneReviewItem() now claims the
-      // item atomically itself (see its own comment), which is what
-      // actually closes the race a plain pre-check here couldn't.
 
       const { error } = await resolveOneReviewItem(reviewItem, client);
       results.push({ entryId, success: !error, error: error || undefined });
@@ -281,7 +257,6 @@ exports.bulkResolveReviewItems = async (req, res, next) => {
     next(error);
   }
 };
-
 
 exports.deleteReviewQueueEntry = async (req, res, next) => {
   try {

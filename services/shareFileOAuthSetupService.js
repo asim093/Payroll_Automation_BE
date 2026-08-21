@@ -65,19 +65,11 @@ const completeLogin = async (code) => {
   }
 
   await saveRefreshToken(data.refresh_token);
-  // ShareFile's token response doesn't include the account's email/name
-  // directly (unlike Microsoft's ID token) - nothing meaningful to show
-  // here, the result page just confirms success generically.
+
   return { loggedInAs: null };
 };
 
-// Exchanges a stored refresh token for a fresh access token - called on
-// every ShareFile API operation (see sharefileService.js's
-// getShareFileAccessToken()). Some OAuth providers rotate the refresh
-// token on every use; to stay correct either way, whatever refresh_token
-// comes back (rotated or unchanged) is always re-saved.
-// @returns { accessToken, subdomain } - same shape the old password-grant
-//   path returned, so sharefileService.js's callers don't need to change.
+
 const refreshAccessToken = async (refreshToken) => {
   const { clientId, clientSecret } = getClientCredentials();
   const body = new URLSearchParams({
@@ -103,9 +95,6 @@ const refreshAccessToken = async (refreshToken) => {
     await saveRefreshToken(data.refresh_token);
   }
 
-  // expiresIn (seconds) lets callers cache this access token instead of
-  // re-exchanging the refresh token on every single API call - see
-  // sharefileService.js's getShareFileAccessToken() cache.
   return {
     accessToken: data.access_token,
     subdomain: data.subdomain || getSubdomain(),

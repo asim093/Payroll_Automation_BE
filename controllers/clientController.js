@@ -302,12 +302,6 @@ exports.deleteClient = async (req, res, next) => {
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
-
-    // Opt-in only (see ClientsPage.jsx's delete dialog) — deleting a
-    // client's record should never silently take its Dropbox/ShareFile/
-    // Outlook folders with it. Best-effort: a folder that couldn't be
-    // removed becomes a warning in the response, never blocks the client
-    // record itself from being deleted.
     let folderWarnings = [];
     if (req.query.deleteFolders === 'true') {
       folderWarnings = await deleteClientFolders(client);
