@@ -48,18 +48,42 @@ const getDropboxAccessTokenViaEnv = async () => {
   }
 
   const data = await response.json();
-  return data.access_token;
+  return { accessToken: data.access_token, expiresIn: data.expires_in };
 };
 
+// PHASE-UI-16 — in-memory cache, same reasoning as sharefileService.js's
+// getShareFileAccessToken() cache: a single ShareFile-Bridge scan calls
+// getDropboxAccessToken() from several places (mirror-upload per client,
+// the orphan-scan, etc.) - without this, each of those re-exchanged the
+// refresh token from scratch. Module-level, so it also carries over between
+// unrelated calls on the long-running web service.
+let cachedToken = null; // { accessToken, expiresAt }
+const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000; // refresh a bit early, never right at the edge
+const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000; // conservative fallback if a response ever omits expires_in
 
+// Checks MongoDB (OAuthCredential, provider: 'dropbox') first - a refresh
+// token saved there means someone completed the hosted /oauth/dropbox/start
+// login. Falls back to the old .env-based DROPBOX_REFRESH_TOKEN otherwise.
+// Same DB-first-then-.env pattern as delegatedAuthService.js and
+// sharefileService.js's getShareFileAccessToken().
 const getDropboxAccessToken = async () => {
+  if (cachedToken && cachedToken.expiresAt > Date.now()) {
+    return cachedToken.accessToken;
+  }
+
   try {
     const stored = await OAuthCredential.findOne({ provider: DROPBOX_OAUTH_PROVIDER_KEY }).lean();
-    if (stored?.refreshToken) {
-      const { accessToken } = await refreshAccessToken(stored.refreshToken);
-      return accessToken;
-    }
-    return await getDropboxAccessTokenViaEnv();
+    const result = stored?.refreshToken
+      ? await refreshAccessToken(stored.refreshToken)
+      : await getDropboxAccessTokenViaEnv();
+
+    const lifetimeMs = result.expiresIn ? result.expiresIn * 1000 : DEFAULT_TOKEN_LIFETIME_MS;
+    cachedToken = {
+      accessToken: result.accessToken,
+      expiresAt: Date.now() + Math.max(0, lifetimeMs - EXPIRY_SAFETY_BUFFER_MS),
+    };
+
+    return result.accessToken;
   } catch (error) {
     console.error(`getDropboxAccessToken ERROR: ${formatError(error)}`);
     throw error;

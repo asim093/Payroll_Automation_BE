@@ -83,7 +83,7 @@ const completeLogin = async (code) => {
 // every Dropbox API operation (see dropboxService.js's getDropboxAccessToken()).
 // Dropbox refresh tokens don't rotate/expire on use, but the response is
 // checked defensively anyway in case that ever changes.
-// @returns { accessToken }
+// @returns { accessToken, expiresIn }
 const refreshAccessToken = async (refreshToken) => {
   const { appKey, appSecret } = getClientCredentials();
   const body = new URLSearchParams({
@@ -109,7 +109,10 @@ const refreshAccessToken = async (refreshToken) => {
     await saveRefreshToken(data.refresh_token);
   }
 
-  return { accessToken: data.access_token };
+  // expiresIn (seconds) lets callers cache this access token instead of
+  // re-exchanging the refresh token on every single API call - see
+  // dropboxService.js's getDropboxAccessToken() cache.
+  return { accessToken: data.access_token, expiresIn: data.expires_in };
 };
 
 module.exports = { PROVIDER_KEY, buildAuthorizationUrl, completeLogin, refreshAccessToken };

@@ -103,7 +103,14 @@ const refreshAccessToken = async (refreshToken) => {
     await saveRefreshToken(data.refresh_token);
   }
 
-  return { accessToken: data.access_token, subdomain: data.subdomain || getSubdomain() };
+  // expiresIn (seconds) lets callers cache this access token instead of
+  // re-exchanging the refresh token on every single API call - see
+  // sharefileService.js's getShareFileAccessToken() cache.
+  return {
+    accessToken: data.access_token,
+    subdomain: data.subdomain || getSubdomain(),
+    expiresIn: data.expires_in,
+  };
 };
 
 module.exports = { PROVIDER_KEY, buildAuthorizationUrl, completeLogin, refreshAccessToken };

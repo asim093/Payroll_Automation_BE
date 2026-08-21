@@ -46,10 +46,31 @@ const getShareFileAccessTokenViaPassword = async () => {
   }
 
   const data = await response.json();
-  return { accessToken: data.access_token, subdomain: data.subdomain };
+  return { accessToken: data.access_token, subdomain: data.subdomain, expiresIn: data.expires_in };
 };
 
+// PHASE-UI-16 — in-memory cache so a single scan touching multiple client
+// folders (processShareFileScan.js loops over every active client) doesn't
+// re-exchange the refresh/password token on every single call - before this,
+// a 6-client scan meant 6+ separate token-exchange HTTP round-trips (one per
+// client, plus one more for the orphan-scan) AND 6+ redundant MongoDB writes
+// (refreshAccessToken() re-saves the refresh token on every exchange).
+// Scoped to this process only (module-level variable) - a cron run is a
+// single process from start to exit, so this already eliminates nearly all
+// the waste within one run; the web service is long-running, so it benefits
+// even more, reusing one token across many unrelated requests until it
+// actually expires. A re-login while a cached token is still valid is only
+// picked up once that token naturally expires - an acceptable bounded delay
+// (well under ShareFile's own ~1hr token lifetime), not a correctness issue.
+let cachedToken = null; // { accessToken, subdomain, expiresAt }
+const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000; // refresh a bit early, never right at the edge
+const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000; // conservative fallback if a response ever omits expires_in
+
 const getShareFileAccessToken = async () => {
+  if (cachedToken && cachedToken.expiresAt > Date.now()) {
+    return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
+  }
+
   const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
     process.env;
 
@@ -58,17 +79,26 @@ const getShareFileAccessToken = async () => {
   }
 
   try {
+    let result;
     const stored = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
     if (stored?.refreshToken) {
-      return await refreshAccessToken(stored.refreshToken);
-    }
-
-    if (!SHAREFILE_USERNAME || !SHAREFILE_PASSWORD) {
+      result = await refreshAccessToken(stored.refreshToken);
+    } else if (SHAREFILE_USERNAME && SHAREFILE_PASSWORD) {
+      result = await getShareFileAccessTokenViaPassword();
+    } else {
       throw new Error(
         'No ShareFile authorization available — either complete the hosted login at /oauth/sharefile/start, or set SHAREFILE_USERNAME/SHAREFILE_PASSWORD in .env.'
       );
     }
-    return await getShareFileAccessTokenViaPassword();
+
+    const lifetimeMs = result.expiresIn ? result.expiresIn * 1000 : DEFAULT_TOKEN_LIFETIME_MS;
+    cachedToken = {
+      accessToken: result.accessToken,
+      subdomain: result.subdomain,
+      expiresAt: Date.now() + Math.max(0, lifetimeMs - EXPIRY_SAFETY_BUFFER_MS),
+    };
+
+    return { accessToken: result.accessToken, subdomain: result.subdomain };
   } catch (error) {
     console.error(`getShareFileAccessToken ERROR: ${formatError(error)}`);
     throw error;
