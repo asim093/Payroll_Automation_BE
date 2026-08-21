@@ -2,13 +2,7 @@ const { buildAuthorizationUrl, completeLogin } = require('../services/microsoftO
 const { formatError } = require('../utils/formatError');
 const { renderOAuthResultPage, escapeHtml } = require('../utils/oauthPageRenderer');
 
-// @desc    Redirects the browser straight to Microsoft's login page - the
-//          entry point of the link sent to whoever needs to log in (see
-//          services/microsoftOAuthSetupService.js's top comment for why
-//          this exists instead of the local getRefreshToken.js script).
-//          Gated by a shared setup-secret so this isn't a fully public
-//          "anyone can (re-)authorize our mailbox integration" link.
-// @route   GET /oauth/microsoft/start?token=...
+
 const startMicrosoftLogin = async (req, res) => {
   const providedToken = req.query.token;
   const expectedToken = process.env.OAUTH_SETUP_SECRET;
@@ -41,11 +35,7 @@ const startMicrosoftLogin = async (req, res) => {
   }
 };
 
-// @desc    Where Microsoft redirects back to after login. Exchanges the
-//          authorization code for a refresh token and saves it to MongoDB
-//          (shared by the web service AND both cron jobs - no per-service
-//          env-var copying needed).
-// @route   GET /oauth/microsoft/callback
+
 const microsoftLoginCallback = async (req, res) => {
   const { code, error, error_description: errorDescription } = req.query;
 

@@ -2,11 +2,7 @@ const { buildAuthorizationUrl, completeLogin } = require('../services/dropboxOAu
 const { formatError } = require('../utils/formatError');
 const { renderOAuthResultPage, escapeHtml } = require('../utils/oauthPageRenderer');
 
-// @desc    Redirects the browser straight to Dropbox's own login page - the
-//          entry point of the link sent to whoever owns the Dropbox account
-//          (see services/dropboxOAuthSetupService.js's top comment). Gated
-//          by the same shared setup-secret as the Microsoft/ShareFile flows.
-// @route   GET /oauth/dropbox/start?token=...
+
 const startDropboxLogin = async (req, res) => {
   const providedToken = req.query.token;
   const expectedToken = process.env.OAUTH_SETUP_SECRET;
@@ -39,11 +35,7 @@ const startDropboxLogin = async (req, res) => {
   }
 };
 
-// @desc    Where Dropbox redirects back to after login. Exchanges the
-//          authorization code for a refresh token and saves it to MongoDB
-//          (shared by the web service AND both cron jobs - no per-service
-//          env-var copying needed).
-// @route   GET /oauth/dropbox/callback
+
 const dropboxLoginCallback = async (req, res) => {
   const { code, error, error_description: errorDescription } = req.query;
 

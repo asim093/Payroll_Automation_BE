@@ -3,12 +3,23 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
 
+
+const isForced = () => process.argv.includes('--force') || process.env.FORCE_RUN === 'true';
+
 (async () => {
   let failed = false;
   try {
     await connectDB();
-    const { isProcessDue } = require('./services/scanThrottle');
-    const due = await isProcessDue('mailSync', 'mailSyncIntervalMinutes');
+
+    const forced = isForced();
+    let due;
+    if (forced) {
+      console.log('[RUN-MAIL-SYNC] --force/FORCE_RUN set - bypassing the time-throttle check.');
+      due = { shouldRun: true };
+    } else {
+      const { isProcessDue } = require('./services/scanThrottle');
+      due = await isProcessDue('mailSync', 'mailSyncIntervalMinutes');
+    }
 
     if (!due.shouldRun) {
       console.log(`[RUN-MAIL-SYNC] Not due yet (~${due.minutesRemaining} min remaining) - skipping.`);

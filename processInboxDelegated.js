@@ -9,12 +9,6 @@ const EmailLog = require('./models/EmailLog');
 
 
 const processInboxDelegated = async (sinceTimestamp) => {
-  // DB-first (the hosted login's stored `loggedInAs`), falling back to the
-  // .env value - mirrors getAccessTokenFromRefreshToken()'s own DB-first
-  // pattern, so DELEGATED_MAILBOX_EMAIL isn't a hard .env requirement once a
-  // hosted login has been completed. This value is only used for the log
-  // line below - the actual Graph calls are scoped to "me", which already
-  // resolves to whichever account the access token belongs to.
   const mailboxEmail = await resolveMailboxEmail();
   if (!mailboxEmail) {
     throw new Error(
@@ -30,13 +24,6 @@ const processInboxDelegated = async (sinceTimestamp) => {
     }...`
   );
 
-  // Scoped to Inbox + Junk Email specifically, NOT an unscoped mailbox-wide
-  // fetch - a new/unrecognized sender's email can legitimately land in
-  // Junk, so that still needs checking, but Deleted Items and every other
-  // folder deliberately do not (see getRecentEmails()'s own comment on the
-  // bug this used to cause: a "deleted" test email is usually just
-  // sitting in Deleted Items, not actually gone, and would otherwise keep
-  // getting re-fetched and reprocessed on every scan).
   const inboxMessages = await getRecentEmails(undefined, accessToken, 'Inbox', sinceTimestamp);
   const junkMessages = await getRecentEmails(undefined, accessToken, 'JunkEmail', sinceTimestamp);
 

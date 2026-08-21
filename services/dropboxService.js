@@ -13,10 +13,7 @@ const {
 
 const sanitizeForPath = (value) => String(value).replace(/[\\/:*?"<>|]/g, '_').trim();
 
-// Legacy path: exchanges .env's DROPBOX_REFRESH_TOKEN (obtained by manually
-// running getDropboxRefreshToken.js once) for an access token. Falls back
-// to this only if no hosted login (see dropboxOAuthSetupService.js) has
-// been completed yet, so nothing breaks mid-migration.
+
 const getDropboxAccessTokenViaEnv = async () => {
   const refreshToken = process.env.DROPBOX_REFRESH_TOKEN;
   const appKey = process.env.DROPBOX_APP_KEY;
@@ -54,11 +51,7 @@ const getDropboxAccessTokenViaEnv = async () => {
   return data.access_token;
 };
 
-// Checks MongoDB (OAuthCredential, provider: 'dropbox') first - a refresh
-// token saved there means someone completed the hosted /oauth/dropbox/start
-// login. Falls back to the old .env-based DROPBOX_REFRESH_TOKEN otherwise.
-// Same DB-first-then-.env pattern as delegatedAuthService.js and
-// sharefileService.js's getShareFileAccessToken().
+
 const getDropboxAccessToken = async () => {
   try {
     const stored = await OAuthCredential.findOne({ provider: DROPBOX_OAUTH_PROVIDER_KEY }).lean();
