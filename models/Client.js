@@ -45,6 +45,7 @@ const clientSchema = new mongoose.Schema(
       type: String,
       enum: ['active', 'inactive'],
       default: 'active',
+      index: true,
     },
     folderSetupWarnings: {
       type: [String],

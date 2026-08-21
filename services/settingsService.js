@@ -16,16 +16,20 @@ const clampIntervalMinutes = (value, fallback) => {
 };
 
 
+const CACHE_TTL_MS = 30 * 1000;
+
 let cache = null;
+let cachedAt = 0;
 
 const getSettings = async () => {
-  if (cache) return cache;
+  if (cache && Date.now() - cachedAt < CACHE_TTL_MS) return cache;
 
   let settings = await Settings.findOne();
   if (!settings) {
     settings = await Settings.create(DEFAULTS);
   }
   cache = settings;
+  cachedAt = Date.now();
   return settings;
 };
 
@@ -59,6 +63,7 @@ const updateSettings = async (updates) => {
 
   await settings.save();
   cache = settings;
+  cachedAt = Date.now();
   return settings;
 };
 

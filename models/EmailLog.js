@@ -31,6 +31,7 @@ const emailLogSchema = new mongoose.Schema(
     matchedClientId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Client',
+      index: true,
     },
     status: {
       type: String,

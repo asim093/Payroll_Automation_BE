@@ -95,7 +95,7 @@ exports.createClient = async (req, res, next) => {
 
 exports.getAllClients = async (req, res, next) => {
   try {
-    const clients = await Client.find();
+    const clients = await Client.find().lean();
     res.status(200).json(clients);
   } catch (error) {
     next(error);

@@ -2,11 +2,11 @@ const Client = require('../models/Client');
 const EmailLog = require('../models/EmailLog');
 
 
-const matchClientBySender = async (senderEmail) => {
+const matchClientBySender = async (senderEmail, activeClients) => {
   const normalizedSender = (senderEmail || '').trim().toLowerCase();
   const senderDomain = normalizedSender.split('@')[1] || '';
 
-  const activeClients = await Client.find({ status: 'active' });
+  activeClients = activeClients || (await Client.find({ status: 'active' }));
 
   const exactMatches = activeClients.filter((client) =>
     (client.matchingRules?.emailAddresses || []).some(
@@ -55,12 +55,12 @@ const matchClientBySender = async (senderEmail) => {
   return null;
 };
 
-const matchClientByDomainPendingReview = async (senderEmail) => {
+const matchClientByDomainPendingReview = async (senderEmail, activeClients) => {
   const normalizedSender = (senderEmail || '').trim().toLowerCase();
   const senderDomain = normalizedSender.split('@')[1] || '';
   if (!senderDomain) return null;
 
-  const activeClients = await Client.find({ status: 'active' });
+  activeClients = activeClients || (await Client.find({ status: 'active' }));
   const domainMatches = activeClients.filter((client) =>
     (client.matchingRules?.domains || []).some((domain) => domain.toLowerCase() === senderDomain)
   );
@@ -73,11 +73,11 @@ const matchClientByDomainPendingReview = async (senderEmail) => {
 };
 
 
-const matchClientByNotificationPattern = async (senderEmail) => {
+const matchClientByNotificationPattern = async (senderEmail, activeClients) => {
   const normalizedSender = (senderEmail || '').trim().toLowerCase();
   if (!normalizedSender) return null;
 
-  const activeClients = await Client.find({ status: 'active' });
+  activeClients = activeClients || (await Client.find({ status: 'active' }));
 
   const patternMatch = activeClients.find((client) => {
     const pattern = client.matchingRules?.notificationSenderPattern;

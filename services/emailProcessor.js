@@ -1,3 +1,4 @@
+const Client = require('../models/Client');
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
 const ReviewQueue = require('../models/ReviewQueue');
@@ -207,8 +208,9 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     return existing;
   }
 
-  
-  const notificationClient = await matchClientByNotificationPattern(sender);
+  const activeClients = await Client.find({ status: 'active' });
+
+  const notificationClient = await matchClientByNotificationPattern(sender, activeClients);
   if (notificationClient) {
     console.log(
       `[SHAREFILE NOTIFICATION] Detected for ${notificationClient.name} - fetching file from ShareFile...`
@@ -267,7 +269,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     return emailLog;
   }
 
-  const matchedClient = await matchClientBySender(sender);
+  const matchedClient = await matchClientBySender(sender, activeClients);
 
   if (matchedClient) {
     const { savedAttachments, categoryAssigned, outlookCopySaved, warnings } = await completeFileProcessing(
@@ -297,7 +299,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   }
 
 
-  const domainPendingMatch = await matchClientByDomainPendingReview(sender);
+  const domainPendingMatch = await matchClientByDomainPendingReview(sender, activeClients);
   const inactiveMatch = domainPendingMatch ? null : await matchInactiveClientBySender(sender);
   const suggestedClient = domainPendingMatch || inactiveMatch || null;
   const reason = domainPendingMatch ? 'new_sender_domain_match' : inactiveMatch ? 'client_inactive' : 'no_match';
