@@ -20,12 +20,9 @@ const getClientApp = () => {
   if (!clientId) {
     throw new Error('DELEGATED_CLIENT_ID (or CLIENT_ID) is not set in .env.');
   }
-  
-  const authority = process.env.TENANT_ID
-    ? `https://login.microsoftonline.com/${process.env.TENANT_ID}`
-    : 'https://login.microsoftonline.com/common';
+
   return new PublicClientApplication({
-    auth: { clientId, authority },
+    auth: { clientId, authority: 'https://login.microsoftonline.com/organizations' },
   });
 };
 
