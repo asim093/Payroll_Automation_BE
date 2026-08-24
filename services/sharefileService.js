@@ -45,8 +45,13 @@ let cachedToken = null;
 const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
 const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
 
-const getShareFileAccessToken = async () => {
-  if (cachedToken && cachedToken.expiresAt > Date.now()) {
+// @param options.forceRefresh - skips the cache and does a real exchange
+//   even if a cached token is still valid. Needed right after a fresh
+//   /oauth/sharefile/start login (e.g. the oauthSmokeTestService.js check)
+//   so a stale-but-still-valid cached token from BEFORE that login doesn't
+//   mask whether the just-obtained one actually works.
+const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
+  if (!forceRefresh && cachedToken && cachedToken.expiresAt > Date.now()) {
     return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
   }
 
@@ -86,8 +91,8 @@ const getShareFileAccessToken = async () => {
 
 const SHAREFILE_ROOT_ALIAS = 'allshared';
 
-const getShareFileContext = async () => {
-  const { accessToken, subdomain } = await getShareFileAccessToken();
+const getShareFileContext = async ({ forceRefresh = false } = {}) => {
+  const { accessToken, subdomain } = await getShareFileAccessToken({ forceRefresh });
   const apiBase = `https://${subdomain}.sf-api.com/sf/v3`;
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
@@ -540,6 +545,7 @@ const deleteShareFileItemById = async (itemId) => {
 
 module.exports = {
   getShareFileAccessToken,
+  getShareFileContext,
   getLatestFileInShareFileFolder,
   fetchFileFromShareFile,
   scanShareFileForNewFiles,

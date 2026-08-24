@@ -54,8 +54,11 @@ let cachedToken = null;
 const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
 const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
 
-const getDropboxAccessToken = async () => {
-  if (cachedToken && cachedToken.expiresAt > Date.now()) {
+// @param options.forceRefresh - see sharefileService.js's identical option
+//   on getShareFileAccessToken() - same reasoning (verifying a just-obtained
+//   token right after a fresh /oauth/dropbox/start login).
+const getDropboxAccessToken = async ({ forceRefresh = false } = {}) => {
+  if (!forceRefresh && cachedToken && cachedToken.expiresAt > Date.now()) {
     return cachedToken.accessToken;
   }
 
