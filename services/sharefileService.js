@@ -91,13 +91,19 @@ const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
 
 const SHAREFILE_ROOT_ALIAS = 'allshared';
 
-const getShareFileContext = async ({ forceRefresh = false } = {}) => {
+const getShareFileContext = async ({ forceRefresh = false, _retriedAfter401 = false } = {}) => {
   const { accessToken, subdomain } = await getShareFileAccessToken({ forceRefresh });
   const apiBase = `https://${subdomain}.sf-api.com/sf/v3`;
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
   try {
     const rootResponse = await fetch(`${apiBase}/Items(${SHAREFILE_ROOT_ALIAS})`, { headers: authHeaders });
+
+    if (rootResponse.status === 401 && !_retriedAfter401) {
+      console.warn('getShareFileContext: cached token was rejected (401) - forcing a fresh token exchange and retrying once.');
+      return getShareFileContext({ forceRefresh: true, _retriedAfter401: true });
+    }
+
     if (!rootResponse.ok) {
       const errorBody = await rootResponse.text();
       throw new Error(`Could not resolve root folder (${rootResponse.status}): ${errorBody}`);
