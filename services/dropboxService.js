@@ -1,3 +1,4 @@
+const fs = require('fs');
 const { Dropbox } = require('dropbox');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { formatError } = require('../utils/formatError');
@@ -217,6 +218,11 @@ const scanDropboxRootForUnmatchedItems = async () => {
       isEmpty = childResponse.result.entries.length === 0;
     }
 
+    if (isFolder && isEmpty) {
+      await UnmatchedDropboxItem.deleteOne({ itemId: entry.id, status: 'unresolved' });
+      continue;
+    }
+
     const existing = await UnmatchedDropboxItem.findOne({ itemId: entry.id });
     if (existing) {
       if (existing.status === 'unresolved') {
@@ -274,6 +280,68 @@ const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, file
   return response.result.metadata.path_display;
 };
 
+const PAYROLL_FILE_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
+
+const findLatestPayrollFile = async (clientFolderSegment) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment);
+
+  let response;
+  try {
+    response = await dbx.filesListFolder({ path: folderPath });
+  } catch (error) {
+    const errorSummary = error?.error?.error_summary || '';
+    if (errorSummary.startsWith('path/not_found')) return null;
+    console.error(`findLatestPayrollFile ERROR (listing "${folderPath}"): ${formatError(error)}`);
+    throw error;
+  }
+
+  const candidateFiles = response.result.entries.filter(
+    (entry) =>
+      entry['.tag'] === 'file' &&
+      PAYROLL_FILE_EXTENSIONS.some((extension) => entry.name.toLowerCase().endsWith(extension))
+  );
+
+  if (candidateFiles.length === 0) return null;
+
+  candidateFiles.sort((a, b) => new Date(b.server_modified) - new Date(a.server_modified));
+  const latest = candidateFiles[0];
+  return { name: latest.name, path: latest.path_lower, modifiedAt: latest.server_modified };
+};
+
+const downloadDropboxFileToLocal = async (dropboxFilePath, localFilePath) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+
+  try {
+    const response = await dbx.filesDownload({ path: dropboxFilePath });
+    fs.writeFileSync(localFilePath, response.result.fileBinary, 'binary');
+  } catch (error) {
+    console.error(`downloadDropboxFileToLocal ERROR ("${dropboxFilePath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
+const uploadReportFile = async (clientFolderSegment, fileName, contentBuffer) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = new Dropbox({ accessToken, fetch });
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment);
+  const dropboxPath = `${folderPath}/${sanitizeForPath(fileName)}`;
+
+  try {
+    const response = await dbx.filesUpload({
+      path: dropboxPath,
+      contents: contentBuffer,
+      mode: { '.tag': 'overwrite' },
+    });
+    return response.result.path_display;
+  } catch (error) {
+    console.error(`uploadReportFile ERROR ("${fileName}" to "${folderPath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
 module.exports = {
   uploadFileToDropbox,
   ensureDropboxFolderExists,
@@ -282,4 +350,7 @@ module.exports = {
   deleteDropboxItemByPath,
   moveDropboxItemToClientFolder,
   getDropboxAccessToken,
+  findLatestPayrollFile,
+  downloadDropboxFileToLocal,
+  uploadReportFile,
 };

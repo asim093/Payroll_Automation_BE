@@ -23,6 +23,27 @@ const findDuplicateByName = async (name, excludeId) => {
 
 
 
+const BLOCKED_PUBLIC_EMAIL_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'ymail.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'aol.com',
+  'icloud.com',
+  'me.com',
+  'protonmail.com',
+]);
+
+const findBlockedPublicDomain = (matchingRules) => {
+  const domains = (matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase());
+  return domains.find((domain) => BLOCKED_PUBLIC_EMAIL_DOMAINS.has(domain)) || null;
+};
+
+
 const findMatchingRuleConflict = async (matchingRules, excludeId) => {
   const emails = (matchingRules?.emailAddresses || []).map((email) => String(email).trim().toLowerCase()).filter(Boolean);
   const domains = (matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase()).filter(Boolean);
@@ -71,6 +92,13 @@ exports.createClient = async (req, res, next) => {
     const duplicate = await findDuplicateByName(name);
     if (duplicate) {
       return res.status(409).json({ error: 'A client with this name already exists' });
+    }
+
+    const blockedDomain = findBlockedPublicDomain(matchingRules);
+    if (blockedDomain) {
+      return res.status(400).json({
+        error: `"${blockedDomain}" is a public email provider and cannot be used as a matching domain. Add the specific email address instead.`,
+      });
     }
 
     const ruleConflict = await findMatchingRuleConflict(matchingRules);
@@ -259,6 +287,13 @@ exports.updateClient = async (req, res, next) => {
     }
 
     if (req.body.matchingRules !== undefined) {
+      const blockedDomain = findBlockedPublicDomain(req.body.matchingRules);
+      if (blockedDomain) {
+        return res.status(400).json({
+          error: `"${blockedDomain}" is a public email provider and cannot be used as a matching domain. Add the specific email address instead.`,
+        });
+      }
+
       const ruleConflict = await findMatchingRuleConflict(req.body.matchingRules, req.params.id);
       if (ruleConflict) {
         return res.status(409).json({ error: ruleConflict });
@@ -291,6 +326,23 @@ exports.updateClient = async (req, res, next) => {
     if (error.code === 11000) {
       return res.status(409).json({ error: 'A client with this name already exists' });
     }
+    next(error);
+  }
+};
+
+
+exports.retryFolderSetup = async (req, res, next) => {
+  try {
+    const client = await Client.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    client.folderSetupWarnings = await setupClientFolders(client);
+    await client.save();
+
+    res.status(200).json(client);
+  } catch (error) {
     next(error);
   }
 };

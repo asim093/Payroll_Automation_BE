@@ -51,6 +51,27 @@ const clientSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    wotcFormUrl: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    complianceReportFrequency: {
+      type: String,
+      enum: ['Monthly', 'Quarterly', 'Annually'],
+    },
+    emailSalutation: {
+      type: String,
+      trim: true,
+    },
+    complianceReportEmailDistribution: {
+      type: String,
+      trim: true,
+    },
+    fein: {
+      type: String,
+      trim: true,
+    },
   },
   { timestamps: true }
 );

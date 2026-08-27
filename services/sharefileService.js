@@ -325,6 +325,12 @@ const scanShareFileForNewFiles = async () => {
 
 const recordUnmatchedItem = async (item, path, isEmpty = false) => {
   const isFile = isFileItem(item);
+
+  if (!isFile && isEmpty) {
+    await UnmatchedShareFileItem.deleteOne({ itemId: item.Id, status: 'unresolved' });
+    return false;
+  }
+
   const existing = await UnmatchedShareFileItem.findOne({ itemId: item.Id });
   if (existing) {
     if (existing.status === 'unresolved') {
@@ -402,7 +408,9 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
         if (!isFileItem(child) && name.trim().toLowerCase() === expectedName.trim().toLowerCase()) {
           continue;
         }
-        const created = await recordUnmatchedItem(child, `${currentPath}/${name}`);
+        const childIsFile = isFileItem(child);
+        const childIsEmpty = childIsFile ? false : (await listChildren(child.Id, apiBase, authHeaders)).length === 0;
+        const created = await recordUnmatchedItem(child, `${currentPath}/${name}`, childIsEmpty);
         if (created) newOrphans++;
       }
     }
