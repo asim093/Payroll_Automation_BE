@@ -18,7 +18,7 @@ const PROCESSED_CATEGORY_NAME = 'Processed';
 const PROCESSED_CATEGORY_COLOR = 'preset1'; 
 
 const saveToDestinations = async (client, fileName, contentBuffer, source, options = {}) => {
-  const { sourceMessageId, sourceFileId, updateFileLogId } = options;
+  const { sourceMessageId, sourceFileId, updateFileLogId, matchMethod } = options;
   const referenceDate = new Date();
   const uniqueFileName = generateUniqueFilename(fileName, referenceDate);
 
@@ -44,6 +44,7 @@ const saveToDestinations = async (client, fileName, contentBuffer, source, optio
       clientId: client._id,
       sourceMessageId,
       sourceFileId,
+      matchMethod,
       ...fields,
     });
   };
@@ -53,7 +54,13 @@ const saveToDestinations = async (client, fileName, contentBuffer, source, optio
 
   try {
     const dropboxFolderSegment = client.dropboxPath || client.name;
-    const dropboxPath = await uploadFileToDropbox(dropboxFolderSegment, fileName, contentBuffer, referenceDate);
+    const dropboxPath = await uploadFileToDropbox(
+      dropboxFolderSegment,
+      fileName,
+      contentBuffer,
+      referenceDate,
+      client.dropboxPathIsAbsolute
+    );
 
     await persistFileLog({
       destinationPath: dropboxPath,
@@ -106,10 +113,10 @@ const saveToDestinations = async (client, fileName, contentBuffer, source, optio
   }
 };
 
-const completeFileProcessing = async (emailData, matchedClient, accessToken, isDelegated = false) => {
+const completeFileProcessing = async (emailData, matchedClient, accessToken, isDelegated = false, matchMethod) => {
   const { messageId, attachments = [] } = emailData;
 
-  
+
   const savedAttachments = [];
   const warnings = [];
   for (const attachment of attachments) {
@@ -126,6 +133,7 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
 
     const saved = await saveToDestinations(matchedClient, attachment.name, contentBuffer, 'outlook', {
       sourceMessageId: messageId,
+      matchMethod,
     });
     savedAttachments.push(saved);
   }
@@ -198,8 +206,10 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
   return { savedAttachments, categoryAssigned, outlookCopySaved, warnings };
 };
 
+const ATTACHMENT_MENTION_PATTERN = /\b(attach|attached|attachment|enclosed|enclosure)\b/i;
+
 const processEmail = async (emailData, accessToken, isDelegated = false) => {
-  const { messageId, sender, subject, receivedDateTime, attachments = [] } = emailData;
+  const { messageId, sender, subject, bodyPreview, receivedDateTime, attachments = [] } = emailData;
   const authMode = isDelegated ? 'delegated' : 'app-only';
 
   const existing = await EmailLog.findOne({ messageId });
@@ -220,7 +230,9 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
 
     try {
       const { content: fileContent, fileName: shareFileFileName } = await fetchFileFromShareFile(
-        notificationClient.shareFilePath || notificationClient.name
+        notificationClient.shareFilePath || notificationClient.name,
+        undefined,
+        notificationClient.shareFilePathIsAbsolute
       );
 
       let savedAttachments = [];
@@ -229,7 +241,9 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
         warning = `Attachment "${shareFileFileName}" was empty or corrupt - skipped`;
         console.warn(`  [ATTACHMENT] ${warning}`);
       } else {
-        const saved = await saveToDestinations(notificationClient, shareFileFileName, fileContent, 'sharefile');
+        const saved = await saveToDestinations(notificationClient, shareFileFileName, fileContent, 'sharefile', {
+          matchMethod: 'notification_pattern',
+        });
         savedAttachments = [saved];
       }
 
@@ -245,6 +259,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
         sourceType: 'sharefile_notification',
         authMode,
         processingError: warning,
+        matchMethod: 'notification_pattern',
       });
       console.log(`[SHAREFILE NOTIFICATION] File retrieved and saved for ${notificationClient.name}.`);
     } catch (error) {
@@ -269,14 +284,16 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     return emailLog;
   }
 
-  const matchedClient = await matchClientBySender(sender, activeClients);
+  const matchResult = await matchClientBySender(sender, activeClients);
 
-  if (matchedClient) {
+  if (matchResult) {
+    const { client: matchedClient, method: matchMethod } = matchResult;
     const { savedAttachments, categoryAssigned, outlookCopySaved, warnings } = await completeFileProcessing(
       { messageId, attachments },
       matchedClient,
       accessToken,
-      isDelegated
+      isDelegated,
+      matchMethod
     );
 
     const emailLog = await EmailLog.create({
@@ -291,6 +308,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
       attachments: savedAttachments,
       authMode,
       processingError: warnings.length ? warnings.join('; ') : undefined,
+      matchMethod,
     });
     console.log(
       `[MATCHED] ${messageId} — sender "${sender}" matched client "${matchedClient.name}". EmailLog created (status: processed).`
@@ -299,10 +317,40 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   }
 
 
-  const domainPendingMatch = await matchClientByDomainPendingReview(sender, activeClients);
-  const inactiveMatch = domainPendingMatch ? null : await matchInactiveClientBySender(sender);
+  const hasAttachments = attachments.length > 0;
+  const mentionsAttachment = ATTACHMENT_MENTION_PATTERN.test(`${subject || ''} ${bodyPreview || ''}`);
+
+  if (!hasAttachments && !mentionsAttachment) {
+    const emailLog = await EmailLog.create({
+      messageId,
+      sender,
+      subject,
+      receivedAt: receivedDateTime,
+      matchedClientId: null,
+      status: 'no_attachment_skipped',
+      categoryAssigned: false,
+      attachments: [],
+      authMode,
+    });
+
+    console.log(
+      `[NO ATTACHMENT - SKIPPED] ${messageId} — sender "${sender}" matched no client and has no attachments (subject/body also has no "attach"-style wording). EmailLog created (status: no_attachment_skipped), not added to Review Queue.`
+    );
+    return emailLog;
+  }
+
+  const possibleMissedAttachment = !hasAttachments && mentionsAttachment;
+
+  const domainPendingMatch = possibleMissedAttachment ? null : await matchClientByDomainPendingReview(sender, activeClients);
+  const inactiveMatch = domainPendingMatch ? null : possibleMissedAttachment ? null : await matchInactiveClientBySender(sender);
   const suggestedClient = domainPendingMatch || inactiveMatch || null;
-  const reason = domainPendingMatch ? 'new_sender_domain_match' : inactiveMatch ? 'client_inactive' : 'no_match';
+  const reason = possibleMissedAttachment
+    ? 'possible_missed_attachment'
+    : domainPendingMatch
+    ? 'new_sender_domain_match'
+    : inactiveMatch
+    ? 'client_inactive'
+    : 'no_match';
 
   const emailLog = await EmailLog.create({
     messageId,
@@ -324,7 +372,9 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   });
 
   console.log(
-    domainPendingMatch
+    possibleMissedAttachment
+      ? `[POSSIBLE MISSED ATTACHMENT] ${messageId} — sender "${sender}" matched no client; no attachment was captured but subject/body mentions one (likely a Graph API attachment-indexing delay). EmailLog created (status: needs_review) + ReviewQueue entry added (reason: possible_missed_attachment) — needs manual check.`
+      : domainPendingMatch
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches active client "${domainPendingMatch.name}" by domain, but this exact address has never been confirmed before. EmailLog created (status: needs_review) + ReviewQueue entry added (reason: new_sender_domain_match).`
       : inactiveMatch
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches inactive client "${inactiveMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: client_inactive).`

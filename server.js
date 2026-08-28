@@ -18,6 +18,7 @@ const internalRoutes = require('./routes/internalRoutes');
 const authRoutes = require('./routes/authRoutes');
 const oauthRoutes = require('./routes/oauthRoutes');
 const complianceReportRoutes = require('./routes/complianceReportRoutes');
+const activityRoutes = require('./routes/activityRoutes');
 
 connectDB();
 
@@ -37,6 +38,7 @@ app.use('/api/unmatched-sharefile-items', unmatchedShareFileItemRoutes);
 app.use('/api/unmatched-dropbox-items', unmatchedDropboxItemRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/compliance-reports', complianceReportRoutes);
+app.use('/api/activity', activityRoutes);
 
 app.use('/internal', internalRoutes);
 

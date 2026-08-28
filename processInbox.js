@@ -57,6 +57,7 @@ const processInbox = async (sinceTimestamp) => {
         message.sender?.emailAddress?.address ||
         '',
       subject: message.subject || '',
+      bodyPreview: message.bodyPreview || '',
       receivedDateTime: message.receivedDateTime,
       attachments,
     };

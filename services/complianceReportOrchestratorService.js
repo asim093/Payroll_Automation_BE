@@ -42,7 +42,7 @@ const generateComplianceReportForClient = async (clientId) => {
       throw new Error(`Client "${client.name}" has no FEIN configured.`);
     }
 
-    const latestFile = await findLatestPayrollFile(client.dropboxPath);
+    const latestFile = await findLatestPayrollFile(client.dropboxPath, client.dropboxPathIsAbsolute);
     if (!latestFile) {
       throw new Error(`No payroll file found in Dropbox folder for client "${client.name}" (${client.dropboxPath}).`);
     }
@@ -72,12 +72,14 @@ const generateComplianceReportForClient = async (clientId) => {
     const uploadedAdminPath = await uploadReportFile(
       reportsFolderSegment,
       path.basename(adminLocalPath),
-      fs.readFileSync(adminLocalPath)
+      fs.readFileSync(adminLocalPath),
+      client.dropboxPathIsAbsolute
     );
     const uploadedClientPath = await uploadReportFile(
       reportsFolderSegment,
       path.basename(clientLocalPath),
-      fs.readFileSync(clientLocalPath)
+      fs.readFileSync(clientLocalPath),
+      client.dropboxPathIsAbsolute
     );
 
     let emailStatus = 'Skipped-No-Email';

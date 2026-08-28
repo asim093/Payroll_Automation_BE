@@ -2,6 +2,7 @@ const Client = require('../models/Client');
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
+const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { setupClientFolders } = require('../services/clientFolderSetupService');
 const { deleteClientFolders } = require('../services/clientFolderCleanupService');
 
@@ -38,8 +39,17 @@ const BLOCKED_PUBLIC_EMAIL_DOMAINS = new Set([
   'protonmail.com',
 ]);
 
+const normalizeDomainForBlockCheck = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '')
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0];
+
 const findBlockedPublicDomain = (matchingRules) => {
-  const domains = (matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase());
+  const domains = (matchingRules?.domains || []).map((domain) => normalizeDomainForBlockCheck(domain));
   return domains.find((domain) => BLOCKED_PUBLIC_EMAIL_DOMAINS.has(domain)) || null;
 };
 
@@ -215,10 +225,11 @@ exports.getClientProfile = async (req, res, next) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    const [emailLogs, fileLogs, unmatchedItems] = await Promise.all([
+    const [emailLogs, fileLogs, unmatchedItems, complianceReportLogs] = await Promise.all([
       EmailLog.find({ matchedClientId: client._id }).sort({ receivedAt: -1 }).lean(),
       FileLog.find({ clientId: client._id }).sort({ processedAt: -1 }).lean(),
       UnmatchedShareFileItem.find({ status: 'unresolved' }).lean(),
+      ComplianceReportLog.find({ clientId: client._id }).sort({ generatedAt: -1 }).limit(500).lean(),
     ]);
 
     const lastEmailAt = emailLogs[0]?.receivedAt;
@@ -254,6 +265,7 @@ exports.getClientProfile = async (req, res, next) => {
         totalEmails: emailLogs.length,
       },
       suggestedUnmatchedItems,
+      complianceReportLogs,
     });
   } catch (error) {
     next(error);
@@ -314,6 +326,10 @@ exports.updateClient = async (req, res, next) => {
     const pathAffectingFieldsChanged =
       (req.body.dropboxPath !== undefined && req.body.dropboxPath.trim() !== (beforeUpdate.dropboxPath || '')) ||
       (req.body.shareFilePath !== undefined && req.body.shareFilePath.trim() !== (beforeUpdate.shareFilePath || '')) ||
+      (req.body.dropboxPathIsAbsolute !== undefined &&
+        Boolean(req.body.dropboxPathIsAbsolute) !== Boolean(beforeUpdate.dropboxPathIsAbsolute)) ||
+      (req.body.shareFilePathIsAbsolute !== undefined &&
+        Boolean(req.body.shareFilePathIsAbsolute) !== Boolean(beforeUpdate.shareFilePathIsAbsolute)) ||
       (req.body.name !== undefined && req.body.name.trim() !== beforeUpdate.name);
 
     if (pathAffectingFieldsChanged) {

@@ -5,7 +5,7 @@ const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const OAuthCredential = require('../models/OAuthCredential');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
-const { joinFolderPath } = require('../utils/folderPath');
+const { resolveFolderPath } = require('../utils/folderPath');
 const {
   PROVIDER_KEY: SHAREFILE_OAUTH_PROVIDER_KEY,
   refreshAccessToken,
@@ -170,9 +170,9 @@ const ensureShareFileFolderExists = async (fullPath) => {
   }
 };
 
-const listFilesInShareFileFolder = async (clientFolderSegment) => {
+const listFilesInShareFileFolder = async (clientFolderSegment, isAbsolute = false) => {
   const { shareFileRootPath } = await getSettings();
-  const folderPath = joinFolderPath(shareFileRootPath, clientFolderSegment);
+  const folderPath = resolveFolderPath(shareFileRootPath, clientFolderSegment, isAbsolute);
 
   try {
     const { apiBase, authHeaders, rootId } = await getShareFileContext();
@@ -226,9 +226,9 @@ const downloadFileContentById = async (fileId) => {
   }
 };
 
-const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
+const getLatestFileInShareFileFolder = async (clientFolderSegment, isAbsolute = false) => {
   try {
-    const files = await listFilesInShareFileFolder(clientFolderSegment);
+    const files = await listFilesInShareFileFolder(clientFolderSegment, isAbsolute);
     if (files.length === 0) {
       throw new Error(`No files found in ShareFile folder for "${clientFolderSegment}"`);
     }
@@ -250,7 +250,7 @@ const getLatestFileInShareFileFolder = async (clientFolderSegment) => {
   }
 };
 
-const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
+const fetchFileFromShareFile = async (clientFolderSegment, fileName, isAbsolute = false) => {
   try {
     let fileId;
     let resolvedFileName;
@@ -259,7 +259,7 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
       resolvedFileName = fileName;
       const { apiBase, authHeaders, rootId } = await getShareFileContext();
       const { shareFileRootPath } = await getSettings();
-      const itemPath = `${joinFolderPath(shareFileRootPath, clientFolderSegment)}/${fileName}`;
+      const itemPath = `${resolveFolderPath(shareFileRootPath, clientFolderSegment, isAbsolute)}/${fileName}`;
       const byPathUrl = `${apiBase}/Items(${rootId})/ByPath?path=${encodeURIComponent(itemPath)}`;
       const itemResponse = await fetch(byPathUrl, { headers: authHeaders });
       if (!itemResponse.ok) {
@@ -269,7 +269,7 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName) => {
       const item = await itemResponse.json();
       fileId = item.Id;
     } else {
-      const latest = await getLatestFileInShareFileFolder(clientFolderSegment);
+      const latest = await getLatestFileInShareFileFolder(clientFolderSegment, isAbsolute);
       fileId = latest.fileId;
       resolvedFileName = latest.fileName;
       console.log(
@@ -297,7 +297,7 @@ const scanShareFileForNewFiles = async () => {
     const shareFileFolderSegment = client.shareFilePath || client.name;
     let files;
     try {
-      files = await listFilesInShareFileFolder(shareFileFolderSegment);
+      files = await listFilesInShareFileFolder(shareFileFolderSegment, client.shareFilePathIsAbsolute);
     } catch (error) {
       console.warn(`  [SHAREFILE SCAN] Skipping "${client.name}" - ${formatError(error)}`);
       continue;
@@ -314,6 +314,7 @@ const scanShareFileForNewFiles = async () => {
           clientId: client._id,
           clientName: client.name,
           dropboxFolderSegment: client.dropboxPath || client.name,
+          dropboxIsAbsolute: client.dropboxPathIsAbsolute,
           fileName: file.Name || file.FileName,
           fileId: file.Id,
           content,
@@ -372,6 +373,8 @@ const listChildren = async (folderId, apiBase, authHeaders) => {
 };
 
 const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, authHeaders, accountRootId) => {
+  if (client.shareFilePathIsAbsolute) return 0;
+
   const expectedSegments = (client.shareFilePath || client.name)
     .split('/')
     .map((part) => part.trim())
@@ -457,6 +460,7 @@ const scanShareFileRootForUnmatchedItems = async () => {
 
   const folderNameToClient = new Map();
   clients.forEach((client) => {
+    if (client.shareFilePathIsAbsolute) return;
     const topSegment = (client.shareFilePath || client.name).split('/')[0].trim().toLowerCase();
     if (!folderNameToClient.has(topSegment)) {
       folderNameToClient.set(topSegment, client);

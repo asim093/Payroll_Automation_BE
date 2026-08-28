@@ -24,7 +24,7 @@ exports.createFileLog = async (req, res, next) => {
 
 exports.getAllFileLogs = async (req, res, next) => {
   try {
-    const fileLogs = await FileLog.find().populate('clientId');
+    const fileLogs = await FileLog.find().sort({ createdAt: -1 }).populate('clientId');
     res.status(200).json(fileLogs);
   } catch (error) {
     next(error);

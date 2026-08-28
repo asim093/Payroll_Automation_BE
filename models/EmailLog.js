@@ -35,7 +35,7 @@ const emailLogSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['processed', 'needs_review', 'failed'],
+      enum: ['processed', 'needs_review', 'failed', 'no_attachment_skipped'],
       default: 'needs_review',
     },
     categoryAssigned: {
@@ -65,7 +65,15 @@ const emailLogSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    matchMethod: {
+      type: String,
+      enum: ['exact_email', 'domain', 'notification_pattern', 'manual'],
+    },
     isDemoData: {
+      type: Boolean,
+      default: false,
+    },
+    archived: {
       type: Boolean,
       default: false,
     },

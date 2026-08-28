@@ -1,7 +1,7 @@
 
 const Client = require('../models/Client');
 const { getSettings } = require('./settingsService');
-const { joinFolderPath } = require('../utils/folderPath');
+const { joinFolderPath, resolveFolderPath } = require('../utils/folderPath');
 const { ensureDropboxFolderExists } = require('./dropboxService');
 const { ensureShareFileFolderExists } = require('./sharefileService');
 const { findOrCreateOutlookFolder } = require('./graphService');
@@ -48,7 +48,7 @@ const setupClientFolders = async (client) => {
 
   try {
     const dropboxSegment = client.dropboxPath || client.name;
-    const result = await ensureDropboxFolderExists(dropboxSegment);
+    const result = await ensureDropboxFolderExists(dropboxSegment, client.dropboxPathIsAbsolute);
     console.log(
       `  [CLIENT SETUP] Dropbox "${result.path}" - ${result.created ? 'created' : 'already existed'}.`
     );
@@ -60,7 +60,7 @@ const setupClientFolders = async (client) => {
 
   try {
     const shareFileSegment = client.shareFilePath || client.name;
-    const resolvedPath = joinFolderPath(shareFileRootPath, shareFileSegment);
+    const resolvedPath = resolveFolderPath(shareFileRootPath, shareFileSegment, client.shareFilePathIsAbsolute);
     const result = await ensureShareFileFolderExists(resolvedPath);
     console.log(
       `  [CLIENT SETUP] ShareFile "${resolvedPath}" - ${result.created ? 'created' : 'already existed'}.`

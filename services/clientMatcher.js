@@ -22,7 +22,7 @@ const matchClientBySender = async (senderEmail, activeClients) => {
     return null;
   }
   if (exactMatches.length === 1) {
-    return exactMatches[0];
+    return { client: exactMatches[0], method: 'exact_email' };
   }
 
   if (senderDomain) {
@@ -46,7 +46,7 @@ const matchClientBySender = async (senderEmail, activeClients) => {
         matchedClientId: client._id,
       });
       if (previouslySeen) {
-        return client;
+        return { client, method: 'domain' };
       }
       return null;
     }

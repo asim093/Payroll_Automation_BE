@@ -13,7 +13,14 @@ const reviewQueueSchema = new mongoose.Schema(
     },
     reason: {
       type: String,
-      enum: ['unknown_sender', 'no_match', 'ambiguous', 'client_inactive', 'new_sender_domain_match'],
+      enum: [
+        'unknown_sender',
+        'no_match',
+        'ambiguous',
+        'client_inactive',
+        'new_sender_domain_match',
+        'possible_missed_attachment',
+      ],
       required: true,
     },
     createdAt: {
@@ -31,6 +38,10 @@ const reviewQueueSchema = new mongoose.Schema(
     suggestedClientId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Client',
+    },
+    archivedReason: {
+      type: String,
+      trim: true,
     },
   },
   { timestamps: true }

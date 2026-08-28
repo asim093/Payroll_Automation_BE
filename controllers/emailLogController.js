@@ -22,7 +22,8 @@ exports.createEmailLog = async (req, res, next) => {
 
 exports.getAllEmailLogs = async (req, res, next) => {
   try {
-    const emailLogs = await EmailLog.find().populate('matchedClientId');
+    const filter = req.query.all === 'true' ? {} : { archived: { $ne: true } };
+    const emailLogs = await EmailLog.find(filter).sort({ createdAt: -1 }).populate('matchedClientId');
     res.status(200).json(emailLogs);
   } catch (error) {
     next(error);

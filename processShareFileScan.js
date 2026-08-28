@@ -27,7 +27,13 @@ const processShareFileScan = async () => {
       await startItem('shareFileBridge', `${file.fileName} (${file.clientName})`);
 
       try {
-        const dropboxPath = await uploadFileToDropbox(file.dropboxFolderSegment, file.fileName, file.content);
+        const dropboxPath = await uploadFileToDropbox(
+          file.dropboxFolderSegment,
+          file.fileName,
+          file.content,
+          undefined,
+          file.dropboxIsAbsolute
+        );
 
         await FileLog.create({
           source: 'sharefile',
@@ -37,6 +43,7 @@ const processShareFileScan = async () => {
           destinationPath: dropboxPath,
           destination: 'dropbox',
           status: 'moved',
+          matchMethod: 'folder_scan',
           processedAt: new Date(),
         });
 
@@ -57,6 +64,7 @@ const processShareFileScan = async () => {
             destination: 'dropbox',
             status: 'failed',
             errorMessage: formatError(error),
+            matchMethod: 'folder_scan',
             processedAt: new Date(),
           });
         } catch (logError) {

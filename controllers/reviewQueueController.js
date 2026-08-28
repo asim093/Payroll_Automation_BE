@@ -7,7 +7,14 @@ const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthSer
 const { completeFileProcessing } = require('../services/emailProcessor');
 
 const VALID_TYPES = ['email', 'file'];
-const VALID_REASONS = ['unknown_sender', 'no_match', 'ambiguous', 'client_inactive', 'new_sender_domain_match'];
+const VALID_REASONS = [
+  'unknown_sender',
+  'no_match',
+  'ambiguous',
+  'client_inactive',
+  'new_sender_domain_match',
+  'possible_missed_attachment',
+];
 
 exports.createReviewQueueEntry = async (req, res, next) => {
   try {
@@ -71,8 +78,10 @@ const attachRelatedData = async (entries) => {
 
 exports.getAllReviewQueueEntries = async (req, res, next) => {
   try {
-    const filter = req.query.all === 'true' ? {} : { resolvedClientId: null };
+    const filter =
+      req.query.all === 'true' ? {} : { resolvedClientId: null, archivedReason: null };
     const entries = await ReviewQueue.find(filter)
+      .sort({ createdAt: -1 })
       .populate('resolvedClientId')
       .populate('suggestedClientId')
       .lean();
@@ -160,7 +169,8 @@ const resolveOneReviewItem = async (reviewItem, client) => {
         { messageId: emailLog.messageId, attachments },
         client,
         accessToken,
-        isDelegated
+        isDelegated,
+        'manual'
       );
 
       emailLog.matchedClientId = client._id;
@@ -169,6 +179,7 @@ const resolveOneReviewItem = async (reviewItem, client) => {
       emailLog.outlookCopySaved = outlookCopySaved;
       emailLog.attachments = savedAttachments;
       emailLog.processingError = undefined;
+      emailLog.matchMethod = 'manual';
       await emailLog.save();
 
       return { error: null };
@@ -188,6 +199,7 @@ const resolveOneReviewItem = async (reviewItem, client) => {
     await FileLog.findByIdAndUpdate(reviewItem.referenceId, {
       clientId: client._id,
       status: 'moved',
+      matchMethod: 'manual',
     });
     return { error: null };
   }

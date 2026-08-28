@@ -73,6 +73,10 @@ const getRecentEmails = async (mailboxEmail, accessToken, folderName, sinceTimes
     url.searchParams.set('$top', '50');
     url.searchParams.set('$orderby', 'receivedDateTime desc');
     url.searchParams.set('$filter', `receivedDateTime ge ${since.toISOString()}`);
+    url.searchParams.set(
+      '$select',
+      'id,subject,from,sender,receivedDateTime,hasAttachments,bodyPreview'
+    );
 
     const response = await fetch(url, {
       method: 'GET',

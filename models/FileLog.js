@@ -52,6 +52,10 @@ const fileLogSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    matchMethod: {
+      type: String,
+      enum: ['exact_email', 'domain', 'notification_pattern', 'manual', 'folder_scan'],
+    },
     isDemoData: {
       type: Boolean,
       default: false,

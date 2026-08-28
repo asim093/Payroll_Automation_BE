@@ -1,6 +1,6 @@
 
 const { getSettings } = require('./settingsService');
-const { joinFolderPath } = require('../utils/folderPath');
+const { resolveFolderPath } = require('../utils/folderPath');
 const { deleteDropboxFolder } = require('./dropboxService');
 const { deleteShareFileFolder } = require('./sharefileService');
 const { deleteMailFolder } = require('./graphService');
@@ -14,7 +14,7 @@ const deleteClientFolders = async (client) => {
 
   try {
     const dropboxSegment = client.dropboxPath || client.name;
-    const result = await deleteDropboxFolder(dropboxSegment);
+    const result = await deleteDropboxFolder(dropboxSegment, client.dropboxPathIsAbsolute);
     console.log(
       `  [CLIENT CLEANUP] Dropbox folder for "${client.name}" - ${result.deleted ? 'deleted' : 'did not exist'}.`
     );
@@ -25,7 +25,7 @@ const deleteClientFolders = async (client) => {
   } 
   try {
     const shareFileSegment = client.shareFilePath || client.name;
-    const resolvedPath = joinFolderPath(shareFileRootPath, shareFileSegment);
+    const resolvedPath = resolveFolderPath(shareFileRootPath, shareFileSegment, client.shareFilePathIsAbsolute);
     const result = await deleteShareFileFolder(resolvedPath);
     console.log(
       `  [CLIENT CLEANUP] ShareFile folder for "${client.name}" - ${result.deleted ? 'deleted' : 'did not exist'}.`

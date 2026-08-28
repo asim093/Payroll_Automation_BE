@@ -37,9 +37,17 @@ const clientSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    shareFilePathIsAbsolute: {
+      type: Boolean,
+      default: false,
+    },
     dropboxPath: {
       type: String,
       trim: true,
+    },
+    dropboxPathIsAbsolute: {
+      type: Boolean,
+      default: false,
     },
     status: {
       type: String,

@@ -30,7 +30,7 @@ const runTests = async () => {
       console.log(`\n${testCase.label}`);
       console.log(`  sender:   ${testCase.senderEmail}`);
       console.log(`  expected: ${testCase.expected}`);
-      console.log(`  result:   ${result ? result.name : 'null'}`);
+      console.log(`  result:   ${result ? `${result.client.name} (${result.method})` : 'null'}`);
     }
   } catch (error) {
     console.error('Error running matcher tests:', error.message);

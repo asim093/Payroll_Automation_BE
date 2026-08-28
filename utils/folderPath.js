@@ -8,4 +8,16 @@ const joinFolderPath = (rootPath, clientPath) => {
   return segments.join('/');
 };
 
-module.exports = { joinFolderPath };
+const resolveFolderPath = (rootPath, clientPath, isAbsolute) => {
+  if (isAbsolute) {
+    return String(clientPath || '')
+      .trim()
+      .split('/')
+      .map((segment) => segment.trim())
+      .filter(Boolean)
+      .join('/');
+  }
+  return joinFolderPath(rootPath, clientPath);
+};
+
+module.exports = { joinFolderPath, resolveFolderPath };
