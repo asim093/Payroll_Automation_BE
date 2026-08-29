@@ -14,6 +14,17 @@ const {
 
 const sanitizeForPath = (value) => String(value).replace(/[\\/:*?"<>|]/g, '_').trim();
 
+const getDropboxPathRoot = () => {
+  const namespaceId = process.env.DROPBOX_TEAM_FOLDER_NAMESPACE_ID;
+  if (!namespaceId) return undefined;
+  return JSON.stringify({ '.tag': 'namespace_id', namespace_id: namespaceId });
+};
+
+const createDropboxClient = (accessToken) => {
+  const pathRoot = getDropboxPathRoot();
+  return pathRoot ? new Dropbox({ accessToken, fetch, pathRoot }) : new Dropbox({ accessToken, fetch });
+};
+
 const getDropboxAccessTokenViaEnv = async () => {
   const refreshToken = process.env.DROPBOX_REFRESH_TOKEN;
   const appKey = process.env.DROPBOX_APP_KEY;
@@ -82,9 +93,12 @@ const getDropboxAccessToken = async ({ forceRefresh = false } = {}) => {
   }
 };
 
+const getEffectiveDropboxRootPath = (storedRootPath) => (getDropboxPathRoot() ? '' : storedRootPath);
+
 const resolveDropboxFolderPath = async (clientFolderSegment, isAbsolute = false) => {
   const { dropboxRootPath } = await getSettings();
-  const resolvedFolder = resolveFolderPath(dropboxRootPath, clientFolderSegment, isAbsolute);
+  const effectiveRootPath = getEffectiveDropboxRootPath(dropboxRootPath);
+  const resolvedFolder = resolveFolderPath(effectiveRootPath, clientFolderSegment, isAbsolute);
 
   const folderSegments = resolvedFolder.split('/').map(sanitizeForPath).filter(Boolean);
   return `/${folderSegments.join('/')}`;
@@ -92,7 +106,7 @@ const resolveDropboxFolderPath = async (clientFolderSegment, isAbsolute = false)
 
 const uploadFileToDropbox = async (clientFolderSegment, fileName, contentBuffer, referenceDate, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
 
   const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
   const uniqueName = generateUniqueFilename(fileName, referenceDate);
@@ -118,7 +132,7 @@ const uploadFileToDropbox = async (clientFolderSegment, fileName, contentBuffer,
 
 const ensureDropboxFolderExists = async (clientFolderSegment, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
   const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
 
   try {
@@ -148,7 +162,7 @@ const ensureDropboxFolderExists = async (clientFolderSegment, isAbsolute = false
 
 const deleteDropboxFolder = async (clientFolderSegment, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
   const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
 
   try {
@@ -167,10 +181,11 @@ const deleteDropboxFolder = async (clientFolderSegment, isAbsolute = false) => {
 
 const scanDropboxRootForUnmatchedItems = async () => {
   const { dropboxRootPath } = await getSettings();
+  const effectiveRootPath = getEffectiveDropboxRootPath(dropboxRootPath);
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
 
-  const rootPath = dropboxRootPath ? `/${dropboxRootPath.replace(/^\/+/, '')}` : '';
+  const rootPath = effectiveRootPath ? `/${effectiveRootPath.replace(/^\/+/, '')}` : '';
 
   let children;
   try {
@@ -179,7 +194,7 @@ const scanDropboxRootForUnmatchedItems = async () => {
   } catch (error) {
     const errorSummary = error?.error?.error_summary || '';
     if (errorSummary.startsWith('path/not_found')) {
-      console.log(`  [DROPBOX ORPHAN SCAN] Root path "${dropboxRootPath}" not found - skipping.`);
+      console.log(`  [DROPBOX ORPHAN SCAN] Root path "${effectiveRootPath}" not found - skipping.`);
       return { scanned: 0, newOrphans: 0, autoResolved: 0 };
     }
     console.error(`scanDropboxRootForUnmatchedItems ERROR (listing root): ${formatError(error)}`);
@@ -255,7 +270,7 @@ const scanDropboxRootForUnmatchedItems = async () => {
 
 const deleteDropboxItemByPath = async (path) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
   try {
     await dbx.filesDeleteV2({ path });
     console.log(`  [DROPBOX] Deleted item "${path}".`);
@@ -272,7 +287,7 @@ const deleteDropboxItemByPath = async (path) => {
 
 const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, fileName, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
   const destinationFolder = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
   const toPath = `${destinationFolder}/${sanitizeForPath(fileName)}`;
 
@@ -285,7 +300,7 @@ const PAYROLL_FILE_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
 
 const findLatestPayrollFile = async (clientFolderSegment, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
   const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
 
   let response;
@@ -313,7 +328,7 @@ const findLatestPayrollFile = async (clientFolderSegment, isAbsolute = false) =>
 
 const downloadDropboxFileToLocal = async (dropboxFilePath, localFilePath) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
 
   try {
     const response = await dbx.filesDownload({ path: dropboxFilePath });
@@ -326,7 +341,7 @@ const downloadDropboxFileToLocal = async (dropboxFilePath, localFilePath) => {
 
 const uploadReportFile = async (clientFolderSegment, fileName, contentBuffer, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
-  const dbx = new Dropbox({ accessToken, fetch });
+  const dbx = createDropboxClient(accessToken);
   const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
   const dropboxPath = `${folderPath}/${sanitizeForPath(fileName)}`;
 
