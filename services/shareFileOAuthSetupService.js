@@ -88,7 +88,9 @@ const refreshAccessToken = async (refreshToken) => {
   const data = await response.json();
   if (!response.ok) {
     console.error(`shareFileOAuthSetupService.refreshAccessToken ERROR: ${response.status} ${JSON.stringify(data)}`);
-    throw new Error(data.error_description || `ShareFile refresh-token exchange failed (${response.status}).`);
+    const error = new Error(data.error_description || `ShareFile refresh-token exchange failed (${response.status}).`);
+    error.code = data.error;
+    throw error;
   }
 
   if (data.refresh_token) {

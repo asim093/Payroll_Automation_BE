@@ -41,6 +41,35 @@ const getShareFileAccessTokenViaPassword = async () => {
   return { accessToken: data.access_token, subdomain: data.subdomain, expiresIn: data.expires_in };
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTokenRotationRaceError = (error) =>
+  error?.code === 'invalid_grant' || /invalid or revoked/i.test(error?.message || '');
+
+const MAX_ROTATION_RETRY_ATTEMPTS = 3;
+const ROTATION_RETRY_DELAY_MS = 400;
+
+const refreshShareFileTokenWithRotationRetry = async (initialRefreshToken) => {
+  let tokenToTry = initialRefreshToken;
+  for (let attempt = 1; attempt <= MAX_ROTATION_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await refreshAccessToken(tokenToTry);
+    } catch (error) {
+      const isLastAttempt = attempt === MAX_ROTATION_RETRY_ATTEMPTS;
+      if (!isTokenRotationRaceError(error) || isLastAttempt) {
+        throw error;
+      }
+      console.warn(
+        `getShareFileAccessToken: refresh token was already rotated by another process (attempt ${attempt}/${MAX_ROTATION_RETRY_ATTEMPTS}) — re-fetching the latest stored token and retrying.`
+      );
+      await sleep(ROTATION_RETRY_DELAY_MS);
+      const latest = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
+      if (!latest?.refreshToken) throw error;
+      tokenToTry = latest.refreshToken;
+    }
+  }
+};
+
 let cachedToken = null;
 const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
 const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
@@ -66,7 +95,7 @@ const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
     let result;
     const stored = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
     if (stored?.refreshToken) {
-      result = await refreshAccessToken(stored.refreshToken);
+      result = await refreshShareFileTokenWithRotationRetry(stored.refreshToken);
     } else if (SHAREFILE_USERNAME && SHAREFILE_PASSWORD) {
       result = await getShareFileAccessTokenViaPassword();
     } else {
