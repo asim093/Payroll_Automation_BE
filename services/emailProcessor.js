@@ -242,6 +242,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
         console.warn(`  [ATTACHMENT] ${warning}`);
       } else {
         const saved = await saveToDestinations(notificationClient, shareFileFileName, fileContent, 'sharefile', {
+          sourceMessageId: messageId,
           matchMethod: 'notification_pattern',
         });
         savedAttachments = [saved];
