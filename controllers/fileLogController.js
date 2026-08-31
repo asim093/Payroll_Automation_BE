@@ -1,6 +1,7 @@
 const FileLog = require('../models/FileLog');
 const { retryFailedFile } = require('../services/fileRetryService');
 const { formatError } = require('../utils/formatError');
+const { getFileBuffer, getMimeType, getPreviewKind, parseTablePreview } = require('../services/filePreviewService');
 
 
 exports.createFileLog = async (req, res, next) => {
@@ -78,6 +79,54 @@ exports.retryFileLog = async (req, res, next) => {
   } catch (error) {
     console.error(`retryFileLog ERROR: ${formatError(error)}`);
     res.status(502).json({ error: error.message });
+  }
+};
+
+
+exports.getFileContent = async (req, res, next) => {
+  try {
+    const fileLog = await FileLog.findById(req.params.id);
+    if (!fileLog) {
+      return res.status(404).json({ error: 'File log not found' });
+    }
+    if (fileLog.status !== 'moved') {
+      return res.status(409).json({ error: 'This file has not finished saving yet, so it cannot be opened.' });
+    }
+
+    const buffer = await getFileBuffer(fileLog);
+    const mimeType = getMimeType(fileLog.originalName);
+    const disposition = req.query.download === '1' ? 'attachment' : 'inline';
+    const safeName = String(fileLog.originalName || 'file').replace(/["\r\n]/g, '');
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
+    res.send(buffer);
+  } catch (error) {
+    console.error(`getFileContent ERROR (FileLog ${req.params.id}): ${formatError(error)}`);
+    res.status(502).json({ error: error.message || 'Could not load this file right now.' });
+  }
+};
+
+
+exports.getFilePreviewData = async (req, res, next) => {
+  try {
+    const fileLog = await FileLog.findById(req.params.id);
+    if (!fileLog) {
+      return res.status(404).json({ error: 'File log not found' });
+    }
+    if (fileLog.status !== 'moved') {
+      return res.status(409).json({ error: 'This file has not finished saving yet, so it cannot be previewed.' });
+    }
+    if (getPreviewKind(fileLog.originalName) !== 'table') {
+      return res.status(400).json({ error: 'This file type does not support a table preview.' });
+    }
+
+    const buffer = await getFileBuffer(fileLog);
+    const table = await parseTablePreview(buffer, fileLog.originalName);
+    res.status(200).json(table);
+  } catch (error) {
+    console.error(`getFilePreviewData ERROR (FileLog ${req.params.id}): ${formatError(error)}`);
+    res.status(502).json({ error: error.message || 'Could not load a preview for this file right now.' });
   }
 };
 

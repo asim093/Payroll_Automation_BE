@@ -136,6 +136,44 @@ const getEmailAttachments = async (mailboxEmail, messageId, accessToken) => {
 };
 
 
+const getMessageBody = async (mailboxEmail, messageId, accessToken) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+
+    const url = `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages/${encodeURIComponent(
+      messageId
+    )}?$select=subject,from,receivedDateTime,body,hasAttachments`;
+
+    const response = await fetchWithRetry(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`getMessageBody ERROR: status ${response.status} - ${errorBody}`);
+      throw new Error(`Graph API error ${response.status}: ${errorBody}`);
+    }
+
+    const data = await response.json();
+    return {
+      subject: data.subject,
+      from: data.from?.emailAddress?.address || null,
+      receivedDateTime: data.receivedDateTime,
+      bodyContentType: data.body?.contentType || 'text',
+      bodyContent: data.body?.content || '',
+      hasAttachments: Boolean(data.hasAttachments),
+    };
+  } catch (error) {
+    console.error(`getMessageBody ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
+
 const assignCategory = async (mailboxEmail, messageId, categoryName, accessToken) => {
   try {
     const token = await resolveAccessToken(accessToken);
@@ -366,6 +404,7 @@ module.exports = {
   getAccessToken,
   getRecentEmails,
   getEmailAttachments,
+  getMessageBody,
   assignCategory,
   ensureCategoryExists,
   findOrCreateOutlookFolder,

@@ -1,5 +1,7 @@
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
+const { getMessageBody, getEmailAttachments } = require('../services/graphService');
+const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthService');
 
 exports.getActivityDetails = async (req, res, next) => {
   try {
@@ -41,5 +43,60 @@ exports.getActivityDetails = async (req, res, next) => {
     return res.status(400).json({ error: `Unknown activity type "${type}"` });
   } catch (error) {
     next(error);
+  }
+};
+
+exports.getEmailBody = async (req, res, next) => {
+  try {
+    const emailLog = await EmailLog.findById(req.params.id);
+    if (!emailLog) {
+      return res.status(404).json({ error: 'Email log not found' });
+    }
+
+    const isDelegated = emailLog.authMode === 'delegated';
+    let accessToken;
+    let mailboxEmail;
+
+    if (isDelegated) {
+      accessToken = await getAccessTokenFromRefreshToken();
+    } else {
+      mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
+      if (!mailboxEmail) {
+        return res.status(503).json({ error: 'TEST_MAILBOX_EMAIL not configured - cannot re-fetch this email from Outlook.' });
+      }
+    }
+
+    const body = await getMessageBody(mailboxEmail, emailLog.messageId, accessToken);
+
+    let attachments = [];
+    if (body.hasAttachments) {
+      try {
+        const graphAttachments = await getEmailAttachments(mailboxEmail, emailLog.messageId, accessToken);
+        attachments = (graphAttachments || []).map((attachment) => ({
+          name: attachment.name,
+          size: attachment.size,
+        }));
+      } catch (attachmentError) {
+        console.error(`getEmailBody: could not load attachment metadata: ${attachmentError.message}`);
+      }
+    }
+
+    res.status(200).json({ ...body, attachments });
+  } catch (error) {
+    console.error(`getEmailBody ERROR (EmailLog ${req.params.id}): ${error.message}`);
+
+    if (/404|ErrorItemNotFound/i.test(error.message)) {
+      return res.status(404).json({
+        error: 'This email is no longer in the mailbox - it looks like it was moved, archived, or deleted after it arrived, so the preview is no longer available.',
+      });
+    }
+
+    if (/401|InvalidAuthenticationToken|invalid_grant|interaction_required/i.test(error.message)) {
+      return res.status(401).json({
+        error: 'The mailbox connection has expired or was revoked - reconnect it and try again.',
+      });
+    }
+
+    res.status(502).json({ error: 'Could not load the email preview right now, please try again in a moment.' });
   }
 };

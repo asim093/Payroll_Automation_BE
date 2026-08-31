@@ -5,6 +5,7 @@ const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { setupClientFolders } = require('../services/clientFolderSetupService');
 const { deleteClientFolders } = require('../services/clientFolderCleanupService');
+const { syncLegacyRulesForClient, deleteAllRulesForClient } = require('../services/matchingRuleSyncService');
 
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -54,35 +55,6 @@ const findBlockedPublicDomain = (matchingRules) => {
 };
 
 
-const findMatchingRuleConflict = async (matchingRules, excludeId) => {
-  const emails = (matchingRules?.emailAddresses || []).map((email) => String(email).trim().toLowerCase()).filter(Boolean);
-  const domains = (matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase()).filter(Boolean);
-  if (emails.length === 0 && domains.length === 0) {
-    return null;
-  }
-
-  const query = excludeId ? { _id: { $ne: excludeId } } : {};
-  const otherClients = await Client.find(query).select('name matchingRules').lean();
-
-  for (const other of otherClients) {
-    const otherEmails = (other.matchingRules?.emailAddresses || []).map((email) => String(email).trim().toLowerCase());
-    const otherDomains = (other.matchingRules?.domains || []).map((domain) => String(domain).trim().toLowerCase());
-
-    const emailConflict = emails.find((email) => otherEmails.includes(email));
-    if (emailConflict) {
-      return `Email address "${emailConflict}" is already used by client "${other.name}"`;
-    }
-
-    const domainConflict = domains.find((domain) => otherDomains.includes(domain));
-    if (domainConflict) {
-      return `Domain "${domainConflict}" is already used by client "${other.name}"`;
-    }
-  }
-
-  return null;
-};
-
-
 exports.createClient = async (req, res, next) => {
   try {
     const { name, matchingRules } = req.body;
@@ -111,15 +83,11 @@ exports.createClient = async (req, res, next) => {
       });
     }
 
-    const ruleConflict = await findMatchingRuleConflict(matchingRules);
-    if (ruleConflict) {
-      return res.status(409).json({ error: ruleConflict });
-    }
-
     const client = await Client.create(req.body);
 
     client.folderSetupWarnings = await setupClientFolders(client);
     await client.save();
+    await syncLegacyRulesForClient(client);
 
     res.status(201).json(client);
   } catch (error) {
@@ -305,11 +273,6 @@ exports.updateClient = async (req, res, next) => {
           error: `"${blockedDomain}" is a public email provider and cannot be used as a matching domain. Add the specific email address instead.`,
         });
       }
-
-      const ruleConflict = await findMatchingRuleConflict(req.body.matchingRules, req.params.id);
-      if (ruleConflict) {
-        return res.status(409).json({ error: ruleConflict });
-      }
     }
 
 
@@ -335,6 +298,10 @@ exports.updateClient = async (req, res, next) => {
     if (pathAffectingFieldsChanged) {
       client.folderSetupWarnings = await setupClientFolders(client);
       await client.save();
+    }
+
+    if (req.body.matchingRules !== undefined) {
+      await syncLegacyRulesForClient(client);
     }
 
     res.status(200).json(client);
@@ -376,6 +343,7 @@ exports.deleteClient = async (req, res, next) => {
     }
 
     await Client.findByIdAndDelete(req.params.id);
+    await deleteAllRulesForClient(req.params.id);
     res.status(200).json({ message: 'Client deleted successfully', folderWarnings });
   } catch (error) {
     next(error);

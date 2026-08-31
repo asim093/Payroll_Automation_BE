@@ -13,6 +13,7 @@ const VALID_REASONS = [
   'ambiguous',
   'client_inactive',
   'new_sender_domain_match',
+  'subject_keyword_match',
   'possible_missed_attachment',
 ];
 

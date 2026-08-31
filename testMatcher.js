@@ -1,43 +1,59 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
-const { matchClientBySender } = require('./services/clientMatcher');
+const Client = require('./models/Client');
+const MatchingRule = require('./models/MatchingRule');
+const EmailLog = require('./models/EmailLog');
+const { matchClientBySender, matchClientBySubjectKeyword } = require('./services/clientMatcher');
 
-const testCases = [
-  {
-    label: '(a) Exact email match',
-    senderEmail: 'sender1@example.com',
-    expected: 'Test Client One',
-  },
-  {
-    label: '(b) Domain-only match (different email, same domain)',
-    senderEmail: 'someoneelse@testcorp.com',
-    expected: 'Test Client Two',
-  },
-  {
-    label: '(c) No match',
-    senderEmail: 'random@nowhere.org',
-    expected: 'null',
-  },
-];
+const TEST_MARKER = '__testMatcher__';
 
-const runTests = async () => {
+const run = async () => {
+  let clientOne, clientTwo;
   try {
     await connectDB();
 
+    clientOne = await Client.create({ name: `${TEST_MARKER}_ClientOne`, status: 'active', matchingRules: {}, isDemoData: true });
+    clientTwo = await Client.create({ name: `${TEST_MARKER}_ClientTwo`, status: 'active', matchingRules: {}, isDemoData: true });
+    await MatchingRule.insertMany([
+      { clientId: clientOne._id, type: 'exact_email', value: 'sender1@example.com', source: 'manual' },
+      { clientId: clientTwo._id, type: 'domain', value: 'testcorp.com', source: 'manual' },
+      { clientId: clientOne._id, type: 'subject_keyword', value: 'wotc batch', source: 'manual' },
+    ]);
+    await EmailLog.create({
+      messageId: `${TEST_MARKER}-seen`,
+      sender: 'someoneelse@testcorp.com',
+      matchedClientId: clientTwo._id,
+      status: 'processed',
+      isDemoData: true,
+    });
+
+    const activeClients = [clientOne, clientTwo];
+
+    const testCases = [
+      { label: '(a) Exact email match', fn: () => matchClientBySender('sender1@example.com', activeClients), expected: clientOne.name },
+      { label: '(b) Domain match (sender previously seen)', fn: () => matchClientBySender('someoneelse@testcorp.com', activeClients), expected: clientTwo.name },
+      { label: '(c) No match', fn: () => matchClientBySender('random@nowhere.org', activeClients), expected: 'null' },
+      { label: '(d) Subject-keyword match', fn: () => matchClientBySubjectKeyword('WOTC Batch ready for review', activeClients), expected: clientOne.name },
+    ];
+
     for (const testCase of testCases) {
-      const result = await matchClientBySender(testCase.senderEmail);
+      const result = await testCase.fn();
+      const resultLabel = result?.client ? `${result.client.name} (${result.method})` : result?.name || 'null';
       console.log(`\n${testCase.label}`);
-      console.log(`  sender:   ${testCase.senderEmail}`);
       console.log(`  expected: ${testCase.expected}`);
-      console.log(`  result:   ${result ? `${result.client.name} (${result.method})` : 'null'}`);
+      console.log(`  result:   ${resultLabel}`);
     }
   } catch (error) {
     console.error('Error running matcher tests:', error.message);
   } finally {
+    const clientIds = [clientOne, clientTwo].filter(Boolean).map((c) => c._id);
+    await MatchingRule.deleteMany({ clientId: { $in: clientIds } });
+    await Client.deleteMany({ name: new RegExp(`^${TEST_MARKER}`) });
+    await EmailLog.deleteMany({ messageId: new RegExp(`^${TEST_MARKER}`) });
     await mongoose.connection.close();
-    console.log('\nConnection closed.');
+    console.log('\nConnection closed. Test clients/rules cleaned up.');
   }
 };
 
-runTests();
+run();

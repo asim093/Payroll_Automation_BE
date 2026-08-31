@@ -339,6 +339,19 @@ const downloadDropboxFileToLocal = async (dropboxFilePath, localFilePath) => {
   }
 };
 
+const downloadDropboxFileBuffer = async (dropboxFilePath) => {
+  const accessToken = await getDropboxAccessToken();
+  const dbx = createDropboxClient(accessToken);
+
+  try {
+    const response = await dbx.filesDownload({ path: dropboxFilePath });
+    return Buffer.from(response.result.fileBinary, 'binary');
+  } catch (error) {
+    console.error(`downloadDropboxFileBuffer ERROR ("${dropboxFilePath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
 const uploadReportFile = async (clientFolderSegment, fileName, contentBuffer, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = createDropboxClient(accessToken);
@@ -368,5 +381,6 @@ module.exports = {
   getDropboxAccessToken,
   findLatestPayrollFile,
   downloadDropboxFileToLocal,
+  downloadDropboxFileBuffer,
   uploadReportFile,
 };

@@ -5,6 +5,7 @@ const ReviewQueue = require('../models/ReviewQueue');
 const {
   matchClientBySender,
   matchClientByNotificationPattern,
+  matchClientBySubjectKeyword,
   matchInactiveClientBySender,
   matchClientByDomainPendingReview,
 } = require('./clientMatcher');
@@ -343,12 +344,19 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   const possibleMissedAttachment = !hasAttachments && mentionsAttachment;
 
   const domainPendingMatch = possibleMissedAttachment ? null : await matchClientByDomainPendingReview(sender, activeClients);
-  const inactiveMatch = domainPendingMatch ? null : possibleMissedAttachment ? null : await matchInactiveClientBySender(sender);
-  const suggestedClient = domainPendingMatch || inactiveMatch || null;
+  const subjectKeywordMatch =
+    domainPendingMatch || possibleMissedAttachment ? null : await matchClientBySubjectKeyword(subject, activeClients);
+  const inactiveMatch =
+    domainPendingMatch || subjectKeywordMatch || possibleMissedAttachment
+      ? null
+      : await matchInactiveClientBySender(sender);
+  const suggestedClient = domainPendingMatch || subjectKeywordMatch || inactiveMatch || null;
   const reason = possibleMissedAttachment
     ? 'possible_missed_attachment'
     : domainPendingMatch
     ? 'new_sender_domain_match'
+    : subjectKeywordMatch
+    ? 'subject_keyword_match'
     : inactiveMatch
     ? 'client_inactive'
     : 'no_match';
@@ -377,6 +385,8 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
       ? `[POSSIBLE MISSED ATTACHMENT] ${messageId} — sender "${sender}" matched no client; no attachment was captured but subject/body mentions one (likely a Graph API attachment-indexing delay). EmailLog created (status: needs_review) + ReviewQueue entry added (reason: possible_missed_attachment) — needs manual check.`
       : domainPendingMatch
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches active client "${domainPendingMatch.name}" by domain, but this exact address has never been confirmed before. EmailLog created (status: needs_review) + ReviewQueue entry added (reason: new_sender_domain_match).`
+      : subjectKeywordMatch
+      ? `[NEEDS REVIEW] ${messageId} — subject matches a subject-keyword rule for client "${subjectKeywordMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: subject_keyword_match) — keyword matches always need manual confirmation.`
       : inactiveMatch
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches inactive client "${inactiveMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: client_inactive).`
       : `[NEEDS REVIEW] ${messageId} — sender "${sender}" matched no client. EmailLog created (status: needs_review) + ReviewQueue entry added.`
