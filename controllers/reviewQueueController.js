@@ -122,6 +122,23 @@ exports.updateReviewQueueEntry = async (req, res, next) => {
   }
 };
 
+exports.restoreReviewQueueEntry = async (req, res, next) => {
+  try {
+    const entry = await ReviewQueue.findById(req.params.id);
+    if (!entry) {
+      return res.status(404).json({ error: 'Review queue entry not found' });
+    }
+    if (!entry.archivedReason) {
+      return res.status(400).json({ error: 'This item is not dismissed.' });
+    }
+    entry.archivedReason = undefined;
+    await entry.save();
+    res.status(200).json(entry);
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.resolveReviewItem = async (req, res, next) => {
   try {
     const { clientId } = req.body;

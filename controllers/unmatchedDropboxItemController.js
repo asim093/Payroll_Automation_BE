@@ -164,6 +164,24 @@ exports.dismissUnmatchedItem = async (req, res, next) => {
   }
 };
 
+exports.restoreUnmatchedItem = async (req, res, next) => {
+  try {
+    const item = await UnmatchedDropboxItem.findById(req.params.id);
+    if (!item) {
+      return res.status(404).json({ error: 'Unmatched item not found' });
+    }
+    if (item.status !== 'dismissed') {
+      return res.status(400).json({ error: `This item is ${item.status}, not dismissed.` });
+    }
+
+    item.status = 'unresolved';
+    await item.save();
+    res.status(200).json(item);
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.deleteUnmatchedItem = async (req, res, next) => {
   try {
     const item = await UnmatchedDropboxItem.findById(req.params.id);
