@@ -74,7 +74,7 @@ const emailLogSchema = new mongoose.Schema(
     },
     matchMethod: {
       type: String,
-      enum: ['exact_email', 'domain', 'notification_pattern', 'manual'],
+      enum: ['exact_email', 'domain', 'subject_keyword', 'notification_pattern', 'manual'],
     },
     isDemoData: {
       type: Boolean,

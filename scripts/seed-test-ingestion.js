@@ -96,6 +96,7 @@ const decideOutcome = async (sender, subject, activeClients) => {
 const seed = async () => {
   const sender = getArg('sender', DEFAULT_SENDER);
   const count = Math.min(MAX_COUNT, Math.max(1, parseInt(getArg('count', String(DEFAULT_COUNT)), 10) || DEFAULT_COUNT));
+  const customSubject = getArg('subject', null);
 
   console.log('\n=== Test Ingestion Seeder ===');
   assertNotProduction();
@@ -120,8 +121,9 @@ const seed = async () => {
 
   for (let i = 0; i < senders.length; i += 1) {
     const senderAddress = senders[i];
-    const baseSubject = SUBJECT_POOL[i % SUBJECT_POOL.length];
-    const subject = `${SUBJECT_PREFIX} ${baseSubject} #${i + 1}`;
+    const subject = customSubject
+      ? `${SUBJECT_PREFIX} ${customSubject}`
+      : `${SUBJECT_PREFIX} ${SUBJECT_POOL[i % SUBJECT_POOL.length]} #${i + 1}`;
     const receivedAt = new Date(Date.now() - i * 60 * 1000);
 
     const decision = await decideOutcome(senderAddress, subject, activeClients);

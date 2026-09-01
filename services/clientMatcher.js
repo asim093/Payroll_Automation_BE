@@ -21,9 +21,38 @@ const matchClientBySender = async (senderEmail, subject, activeClients) => {
   const clientById = buildClientLookup(activeClients);
   const clientIds = activeClients.map((client) => client._id);
 
+  const resolveAmbiguityBySubject = async (candidateClientIds) => {
+    if (!normalizedSubject) return null;
+
+    const keywordRules = await getActiveRulesByType(candidateClientIds, 'subject_keyword');
+    const clientsWithRules = new Set(keywordRules.map((rule) => String(rule.clientId)));
+    const matchingClientIds = uniqueClientIdsMatching(keywordRules, (rule) => normalizedSubject.includes(rule.value));
+
+    if (matchingClientIds.length === 1) {
+      return clientById.get(matchingClientIds[0]);
+    }
+    if (matchingClientIds.length > 1) {
+      return null;
+    }
+
+    const clientsWithoutRules = candidateClientIds.filter((id) => !clientsWithRules.has(String(id)));
+    if (clientsWithoutRules.length === 1) {
+      return clientById.get(String(clientsWithoutRules[0]));
+    }
+
+    return null;
+  };
+
   const emailRules = await getActiveRulesByType(clientIds, 'exact_email');
   const exactMatchClientIds = uniqueClientIdsMatching(emailRules, (rule) => rule.value === normalizedSender);
   if (exactMatchClientIds.length > 1) {
+    const resolvedClient = await resolveAmbiguityBySubject(exactMatchClientIds);
+    if (resolvedClient) {
+      console.warn(
+        `AMBIGUOUS MATCH RESOLVED: sender "${normalizedSender}" matched multiple clients by exact email, subject-keyword picked "${resolvedClient.name}".`
+      );
+      return { client: resolvedClient, method: 'subject_keyword' };
+    }
     console.warn(
       `AMBIGUOUS MATCH: sender "${normalizedSender}" matches multiple clients (exact email): [${exactMatchClientIds
         .map((id) => clientById.get(id)?.name)
@@ -39,6 +68,13 @@ const matchClientBySender = async (senderEmail, subject, activeClients) => {
     const domainRules = await getActiveRulesByType(clientIds, 'domain');
     const domainMatchClientIds = uniqueClientIdsMatching(domainRules, (rule) => rule.value === senderDomain);
     if (domainMatchClientIds.length > 1) {
+      const resolvedClient = await resolveAmbiguityBySubject(domainMatchClientIds);
+      if (resolvedClient) {
+        console.warn(
+          `AMBIGUOUS MATCH RESOLVED: sender "${normalizedSender}" matched multiple clients by domain "${senderDomain}", subject-keyword picked "${resolvedClient.name}".`
+        );
+        return { client: resolvedClient, method: 'subject_keyword' };
+      }
       console.warn(
         `AMBIGUOUS MATCH: sender "${normalizedSender}" matches multiple clients (domain "${senderDomain}"): [${domainMatchClientIds
           .map((id) => clientById.get(id)?.name)
