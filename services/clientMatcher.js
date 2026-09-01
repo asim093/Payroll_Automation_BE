@@ -12,9 +12,10 @@ const uniqueClientIdsMatching = (rules, predicate) => [
 ];
 
 
-const matchClientBySender = async (senderEmail, activeClients) => {
+const matchClientBySender = async (senderEmail, subject, activeClients) => {
   const normalizedSender = (senderEmail || '').trim().toLowerCase();
   const senderDomain = normalizedSender.split('@')[1] || '';
+  const normalizedSubject = (subject || '').toLowerCase();
 
   activeClients = activeClients || (await Client.find({ status: 'active' }));
   const clientById = buildClientLookup(activeClients);
@@ -46,15 +47,23 @@ const matchClientBySender = async (senderEmail, activeClients) => {
       return null;
     }
     if (domainMatchClientIds.length === 1) {
-      const client = clientById.get(domainMatchClientIds[0]);
-      const previouslySeen = await EmailLog.exists({
-        sender: normalizedSender,
-        matchedClientId: client._id,
-      });
-      if (previouslySeen) {
-        return { client, method: 'domain' };
-      }
+      return { client: clientById.get(domainMatchClientIds[0]), method: 'domain' };
+    }
+  }
+
+  if (normalizedSubject) {
+    const keywordRules = await getActiveRulesByType(clientIds, 'subject_keyword');
+    const keywordMatchClientIds = uniqueClientIdsMatching(keywordRules, (rule) => normalizedSubject.includes(rule.value));
+    if (keywordMatchClientIds.length > 1) {
+      console.warn(
+        `AMBIGUOUS MATCH: subject "${subject}" matches multiple clients (subject-keyword): [${keywordMatchClientIds
+          .map((id) => clientById.get(id)?.name)
+          .join(', ')}]`
+      );
       return null;
+    }
+    if (keywordMatchClientIds.length === 1) {
+      return { client: clientById.get(keywordMatchClientIds[0]), method: 'subject_keyword' };
     }
   }
 

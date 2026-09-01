@@ -12,10 +12,25 @@ const settingsSchema = new mongoose.Schema(
       trim: true,
       default: 'Clients',
     },
+    dropboxClientSubfolder: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    shareFileClientSubfolder: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     outlookRootPath: {
       type: String,
       trim: true,
       default: 'Clients',
+    },
+    outlookClientSubfolder: {
+      type: String,
+      trim: true,
+      default: '',
     },
 
     mailSyncIntervalMinutes: {

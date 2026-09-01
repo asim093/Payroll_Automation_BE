@@ -5,9 +5,7 @@ const ReviewQueue = require('../models/ReviewQueue');
 const {
   matchClientBySender,
   matchClientByNotificationPattern,
-  matchClientBySubjectKeyword,
   matchInactiveClientBySender,
-  matchClientByDomainPendingReview,
 } = require('./clientMatcher');
 const { saveAttachmentToClientFolder } = require('./fileStorage');
 const { uploadFileToDropbox } = require('./dropboxService');
@@ -115,7 +113,8 @@ const saveToDestinations = async (client, fileName, contentBuffer, source, optio
 };
 
 const completeFileProcessing = async (emailData, matchedClient, accessToken, isDelegated = false, matchMethod) => {
-  const { messageId, attachments = [] } = emailData;
+  const { messageId, liveMessageId, attachments = [] } = emailData;
+  const graphMessageId = liveMessageId || messageId;
 
 
   const savedAttachments = [];
@@ -150,12 +149,12 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
       console.error(`  [CATEGORY SETUP] ERROR ensuring category exists (delegated): ${error.message}`);
     }
     try {
-      await assignCategory(undefined, messageId, PROCESSED_CATEGORY_NAME, accessToken);
+      await assignCategory(undefined, graphMessageId, PROCESSED_CATEGORY_NAME, accessToken);
       categoryAssigned = true;
-      console.log(`  [CATEGORY] "Processed" category assigned to ${messageId} (delegated).`);
+      console.log(`  [CATEGORY] "Processed" category assigned to ${graphMessageId} (delegated).`);
     } catch (error) {
       console.error(
-        `  [CATEGORY] ERROR assigning category to ${messageId} (delegated): ${error.message}`
+        `  [CATEGORY] ERROR assigning category to ${graphMessageId} (delegated): ${error.message}`
       );
     }
   } else {
@@ -169,11 +168,11 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
         console.error(`  [CATEGORY SETUP] ERROR ensuring category exists: ${error.message}`);
       }
       try {
-        await assignCategory(mailboxEmail, messageId, PROCESSED_CATEGORY_NAME);
+        await assignCategory(mailboxEmail, graphMessageId, PROCESSED_CATEGORY_NAME);
         categoryAssigned = true;
-        console.log(`  [CATEGORY] "Processed" category assigned to ${messageId}.`);
+        console.log(`  [CATEGORY] "Processed" category assigned to ${graphMessageId}.`);
       } catch (error) {
-        console.error(`  [CATEGORY] ERROR assigning category to ${messageId}: ${error.message}`);
+        console.error(`  [CATEGORY] ERROR assigning category to ${graphMessageId}: ${error.message}`);
       }
     }
   }
@@ -183,19 +182,19 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
   if (savedAttachments.length > 0 && matchedClient.outlookFolderId) {
     try {
       if (isDelegated && accessToken) {
-        await copyEmailToFolder(messageId, matchedClient.outlookFolderId, accessToken, undefined);
+        await copyEmailToFolder(graphMessageId, matchedClient.outlookFolderId, accessToken, undefined);
       } else {
         const mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
         if (!mailboxEmail) {
           throw new Error('TEST_MAILBOX_EMAIL not configured - cannot copy via the app-only flow.');
         }
-        await copyEmailToFolder(messageId, matchedClient.outlookFolderId, undefined, mailboxEmail);
+        await copyEmailToFolder(graphMessageId, matchedClient.outlookFolderId, undefined, mailboxEmail);
       }
       outlookCopySaved = true;
-      console.log(`  [OUTLOOK COPY] Filed a copy of ${messageId} into "${matchedClient.name}"'s mail folder.`);
+      console.log(`  [OUTLOOK COPY] Filed a copy of ${graphMessageId} into "${matchedClient.name}"'s mail folder.`);
     } catch (error) {
       console.error(
-        `  [OUTLOOK COPY] ERROR copying ${messageId} into "${matchedClient.name}"'s mail folder: ${error.message}`
+        `  [OUTLOOK COPY] ERROR copying ${graphMessageId} into "${matchedClient.name}"'s mail folder: ${error.message}`
       );
     }
   } else if (savedAttachments.length > 0) {
@@ -210,7 +209,7 @@ const completeFileProcessing = async (emailData, matchedClient, accessToken, isD
 const ATTACHMENT_MENTION_PATTERN = /\b(attach|attached|attachment|enclosed|enclosure)\b/i;
 
 const processEmail = async (emailData, accessToken, isDelegated = false) => {
-  const { messageId, sender, subject, bodyPreview, receivedDateTime, attachments = [] } = emailData;
+  const { messageId, internetMessageId, sender, subject, bodyPreview, receivedDateTime, attachments = [] } = emailData;
   const authMode = isDelegated ? 'delegated' : 'app-only';
 
   const existing = await EmailLog.findOne({ messageId });
@@ -251,6 +250,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
 
       emailLog = await EmailLog.create({
         messageId,
+        internetMessageId,
         sender,
         subject,
         receivedAt: receivedDateTime,
@@ -270,6 +270,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
       );
       emailLog = await EmailLog.create({
         messageId,
+        internetMessageId,
         sender,
         subject,
         receivedAt: receivedDateTime,
@@ -286,7 +287,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     return emailLog;
   }
 
-  const matchResult = await matchClientBySender(sender, activeClients);
+  const matchResult = await matchClientBySender(sender, subject, activeClients);
 
   if (matchResult) {
     const { client: matchedClient, method: matchMethod } = matchResult;
@@ -300,6 +301,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
 
     const emailLog = await EmailLog.create({
       messageId,
+      internetMessageId,
       sender,
       subject,
       receivedAt: receivedDateTime,
@@ -325,6 +327,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   if (!hasAttachments && !mentionsAttachment) {
     const emailLog = await EmailLog.create({
       messageId,
+      internetMessageId,
       sender,
       subject,
       receivedAt: receivedDateTime,
@@ -343,26 +346,17 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
 
   const possibleMissedAttachment = !hasAttachments && mentionsAttachment;
 
-  const domainPendingMatch = possibleMissedAttachment ? null : await matchClientByDomainPendingReview(sender, activeClients);
-  const subjectKeywordMatch =
-    domainPendingMatch || possibleMissedAttachment ? null : await matchClientBySubjectKeyword(subject, activeClients);
-  const inactiveMatch =
-    domainPendingMatch || subjectKeywordMatch || possibleMissedAttachment
-      ? null
-      : await matchInactiveClientBySender(sender);
-  const suggestedClient = domainPendingMatch || subjectKeywordMatch || inactiveMatch || null;
+  const inactiveMatch = possibleMissedAttachment ? null : await matchInactiveClientBySender(sender);
+  const suggestedClient = inactiveMatch || null;
   const reason = possibleMissedAttachment
     ? 'possible_missed_attachment'
-    : domainPendingMatch
-    ? 'new_sender_domain_match'
-    : subjectKeywordMatch
-    ? 'subject_keyword_match'
     : inactiveMatch
     ? 'client_inactive'
     : 'no_match';
 
   const emailLog = await EmailLog.create({
     messageId,
+    internetMessageId,
     sender,
     subject,
     receivedAt: receivedDateTime,
@@ -383,10 +377,6 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
   console.log(
     possibleMissedAttachment
       ? `[POSSIBLE MISSED ATTACHMENT] ${messageId} — sender "${sender}" matched no client; no attachment was captured but subject/body mentions one (likely a Graph API attachment-indexing delay). EmailLog created (status: needs_review) + ReviewQueue entry added (reason: possible_missed_attachment) — needs manual check.`
-      : domainPendingMatch
-      ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches active client "${domainPendingMatch.name}" by domain, but this exact address has never been confirmed before. EmailLog created (status: needs_review) + ReviewQueue entry added (reason: new_sender_domain_match).`
-      : subjectKeywordMatch
-      ? `[NEEDS REVIEW] ${messageId} — subject matches a subject-keyword rule for client "${subjectKeywordMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: subject_keyword_match) — keyword matches always need manual confirmation.`
       : inactiveMatch
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches inactive client "${inactiveMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: client_inactive).`
       : `[NEEDS REVIEW] ${messageId} — sender "${sender}" matched no client. EmailLog created (status: needs_review) + ReviewQueue entry added.`

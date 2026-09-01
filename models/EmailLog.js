@@ -16,6 +16,13 @@ const emailLogSchema = new mongoose.Schema(
       unique: true,
       index: true,
     },
+    internetMessageId: {
+      type: String,
+      index: true,
+    },
+    currentMessageId: {
+      type: String,
+    },
     sender: {
       type: String,
       required: true,

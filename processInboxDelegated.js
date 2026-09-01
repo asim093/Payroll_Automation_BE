@@ -65,6 +65,7 @@ const processInboxDelegated = async (sinceTimestamp) => {
 
       const emailData = {
         messageId: message.id,
+        internetMessageId: message.internetMessageId,
         sender:
           message.from?.emailAddress?.address ||
           message.sender?.emailAddress?.address ||

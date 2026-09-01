@@ -75,7 +75,7 @@ const getRecentEmails = async (mailboxEmail, accessToken, folderName, sinceTimes
     url.searchParams.set('$filter', `receivedDateTime ge ${since.toISOString()}`);
     url.searchParams.set(
       '$select',
-      'id,subject,from,sender,receivedDateTime,hasAttachments,bodyPreview'
+      'id,internetMessageId,subject,from,sender,receivedDateTime,hasAttachments,bodyPreview'
     );
 
     const response = await fetch(url, {
@@ -136,13 +136,46 @@ const getEmailAttachments = async (mailboxEmail, messageId, accessToken) => {
 };
 
 
+const findMessageIdByInternetMessageId = async (mailboxEmail, internetMessageId, accessToken) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+
+    const url = new URL(`${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages`);
+    const escapedValue = String(internetMessageId).replace(/'/g, "''");
+    url.searchParams.set('$filter', `internetMessageId eq '${escapedValue}'`);
+    url.searchParams.set('$select', 'id');
+    url.searchParams.set('$top', '1');
+
+    const response = await fetchWithRetry(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`findMessageIdByInternetMessageId ERROR: status ${response.status} - ${errorBody}`);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.value?.[0]?.id || null;
+  } catch (error) {
+    console.error(`findMessageIdByInternetMessageId ERROR: ${error.message}`);
+    return null;
+  }
+};
+
+
 const getMessageBody = async (mailboxEmail, messageId, accessToken) => {
   try {
     const token = await resolveAccessToken(accessToken);
 
     const url = `${GRAPH_BASE_URL}/${mailboxSegment(mailboxEmail)}/messages/${encodeURIComponent(
       messageId
-    )}?$select=subject,from,receivedDateTime,body,hasAttachments`;
+    )}?$select=subject,from,receivedDateTime,body,hasAttachments,internetMessageId`;
 
     const response = await fetchWithRetry(url, {
       method: 'GET',
@@ -166,6 +199,7 @@ const getMessageBody = async (mailboxEmail, messageId, accessToken) => {
       bodyContentType: data.body?.contentType || 'text',
       bodyContent: data.body?.content || '',
       hasAttachments: Boolean(data.hasAttachments),
+      internetMessageId: data.internetMessageId || null,
     };
   } catch (error) {
     console.error(`getMessageBody ERROR: ${error.message}`);
@@ -405,6 +439,7 @@ module.exports = {
   getRecentEmails,
   getEmailAttachments,
   getMessageBody,
+  findMessageIdByInternetMessageId,
   assignCategory,
   ensureCategoryExists,
   findOrCreateOutlookFolder,

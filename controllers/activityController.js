@@ -2,6 +2,7 @@ const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
 const { getMessageBody, getEmailAttachments } = require('../services/graphService');
 const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthService');
+const { withResilientMessageId } = require('../services/emailIdResolver');
 
 exports.getActivityDetails = async (req, res, next) => {
   try {
@@ -66,12 +67,23 @@ exports.getEmailBody = async (req, res, next) => {
       }
     }
 
-    const body = await getMessageBody(mailboxEmail, emailLog.messageId, accessToken);
+    const body = await withResilientMessageId(emailLog, mailboxEmail, accessToken, (currentId) =>
+      getMessageBody(mailboxEmail, currentId, accessToken)
+    );
+
+    if (body.internetMessageId && emailLog.internetMessageId !== body.internetMessageId) {
+      emailLog.internetMessageId = body.internetMessageId;
+      emailLog.save().catch((saveError) => {
+        console.error(`getEmailBody: could not backfill internetMessageId for EmailLog ${emailLog._id}: ${saveError.message}`);
+      });
+    }
 
     let attachments = [];
     if (body.hasAttachments) {
       try {
-        const graphAttachments = await getEmailAttachments(mailboxEmail, emailLog.messageId, accessToken);
+        const graphAttachments = await withResilientMessageId(emailLog, mailboxEmail, accessToken, (currentId) =>
+          getEmailAttachments(mailboxEmail, currentId, accessToken)
+        );
         attachments = (graphAttachments || []).map((attachment) => ({
           name: attachment.name,
           size: attachment.size,
@@ -81,7 +93,8 @@ exports.getEmailBody = async (req, res, next) => {
       }
     }
 
-    res.status(200).json({ ...body, attachments });
+    const { internetMessageId, ...bodyForResponse } = body;
+    res.status(200).json({ ...bodyForResponse, attachments });
   } catch (error) {
     console.error(`getEmailBody ERROR (EmailLog ${req.params.id}): ${error.message}`);
 

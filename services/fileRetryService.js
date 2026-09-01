@@ -5,6 +5,7 @@ const { saveToDestinations } = require('./emailProcessor');
 const { downloadFileContentById } = require('./sharefileService');
 const { getEmailAttachments } = require('./graphService');
 const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+const { withResilientMessageId } = require('./emailIdResolver');
 
 const retryFailedFile = async (fileLog) => {
   if (fileLog.status !== 'failed') {
@@ -30,7 +31,10 @@ const retryFailedFile = async (fileLog) => {
 
    
     const emailLog = await EmailLog.findOne({ messageId: fileLog.sourceMessageId });
-    const isDelegated = emailLog?.authMode === 'delegated';
+    if (!emailLog) {
+      throw new Error('The source email for this file could not be found in our records - cannot retry automatically');
+    }
+    const isDelegated = emailLog.authMode === 'delegated';
     let accessToken;
     let mailboxEmail;
     if (isDelegated) {
@@ -42,7 +46,9 @@ const retryFailedFile = async (fileLog) => {
       }
     }
 
-    const attachments = await getEmailAttachments(mailboxEmail, fileLog.sourceMessageId, accessToken);
+    const attachments = await withResilientMessageId(emailLog, mailboxEmail, accessToken, (currentId) =>
+      getEmailAttachments(mailboxEmail, currentId, accessToken)
+    );
     const match = (attachments || []).find((attachment) => attachment.name === fileLog.originalName && attachment.contentBytes);
     if (!match) {
       throw new Error('Original attachment is no longer available on the source email');

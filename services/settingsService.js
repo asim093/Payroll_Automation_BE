@@ -3,7 +3,10 @@ const Settings = require('../models/Settings');
 const DEFAULTS = {
   dropboxRootPath: 'WOTC',
   shareFileRootPath: 'Clients',
+  dropboxClientSubfolder: '',
+  shareFileClientSubfolder: '',
   outlookRootPath: 'Clients',
+  outlookClientSubfolder: '',
   mailSyncIntervalMinutes: 5,
   shareFileBridgeIntervalMinutes: 5,
 };
@@ -45,8 +48,17 @@ const updateSettings = async (updates) => {
   if (updates.shareFileRootPath !== undefined) {
     settings.shareFileRootPath = updates.shareFileRootPath;
   }
+  if (updates.dropboxClientSubfolder !== undefined) {
+    settings.dropboxClientSubfolder = updates.dropboxClientSubfolder;
+  }
+  if (updates.shareFileClientSubfolder !== undefined) {
+    settings.shareFileClientSubfolder = updates.shareFileClientSubfolder;
+  }
   if (updates.outlookRootPath !== undefined) {
     settings.outlookRootPath = updates.outlookRootPath;
+  }
+  if (updates.outlookClientSubfolder !== undefined) {
+    settings.outlookClientSubfolder = updates.outlookClientSubfolder;
   }
   if (updates.mailSyncIntervalMinutes !== undefined) {
     settings.mailSyncIntervalMinutes = clampIntervalMinutes(

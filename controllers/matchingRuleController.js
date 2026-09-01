@@ -1,10 +1,32 @@
 const MatchingRule = require('../models/MatchingRule');
 const Client = require('../models/Client');
+const ReviewQueue = require('../models/ReviewQueue');
+const EmailLog = require('../models/EmailLog');
 
 const VALID_TYPES = ['exact_email', 'domain', 'notification_pattern', 'subject_keyword'];
 const UNIQUE_ACROSS_CLIENTS_TYPES = ['exact_email', 'domain'];
+const PREVIEW_LIMIT = 20;
 
 const normalizeValue = (value) => String(value || '').trim().toLowerCase();
+
+const doesEmailMatchRule = (email, type, normalizedValue) => {
+  if (!normalizedValue) return false;
+  const sender = String(email.sender || '').trim().toLowerCase();
+  const subject = String(email.subject || '').toLowerCase();
+
+  switch (type) {
+    case 'exact_email':
+      return sender === normalizedValue;
+    case 'domain':
+      return (sender.split('@')[1] || '') === normalizedValue;
+    case 'subject_keyword':
+      return subject.includes(normalizedValue);
+    case 'notification_pattern':
+      return sender.includes(normalizedValue);
+    default:
+      return false;
+  }
+};
 
 exports.getAllRules = async (req, res, next) => {
   try {
@@ -90,6 +112,63 @@ exports.updateRule = async (req, res, next) => {
     }
     await rule.save();
     res.status(200).json(rule);
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.previewRuleMatches = async (req, res, next) => {
+  try {
+    const { type, value } = req.body;
+
+    if (!type || !VALID_TYPES.includes(type)) {
+      return res.status(400).json({ error: `type is required and must be one of: ${VALID_TYPES.join(', ')}` });
+    }
+    if (!value || !String(value).trim()) {
+      return res.status(400).json({ error: 'value is required' });
+    }
+
+    const normalizedValue = normalizeValue(value);
+
+    const pendingEmailEntries = await ReviewQueue.find({
+      type: 'email',
+      resolvedClientId: null,
+      archivedReason: null,
+    })
+      .select('_id referenceId')
+      .lean();
+
+    if (pendingEmailEntries.length === 0) {
+      return res.status(200).json({ count: 0, items: [], matchedIds: [] });
+    }
+
+    const emailIds = pendingEmailEntries.map((entry) => entry.referenceId);
+    const emailLogs = await EmailLog.find({ _id: { $in: emailIds } })
+      .select('sender subject receivedAt')
+      .lean();
+    const emailById = new Map(emailLogs.map((log) => [String(log._id), log]));
+
+    const matches = [];
+    pendingEmailEntries.forEach((entry) => {
+      const email = emailById.get(String(entry.referenceId));
+      if (!email) return;
+      if (doesEmailMatchRule(email, type, normalizedValue)) {
+        matches.push({
+          reviewQueueId: entry._id,
+          sender: email.sender,
+          subject: email.subject,
+          receivedAt: email.receivedAt,
+        });
+      }
+    });
+
+    matches.sort((a, b) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime());
+
+    res.status(200).json({
+      count: matches.length,
+      items: matches.slice(0, PREVIEW_LIMIT),
+      matchedIds: matches.map((match) => match.reviewQueueId),
+    });
   } catch (error) {
     next(error);
   }

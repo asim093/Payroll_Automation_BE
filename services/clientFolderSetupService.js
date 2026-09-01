@@ -44,7 +44,7 @@ const checkForPathCollisions = async (client) => {
 
 const setupClientFolders = async (client) => {
   const warnings = await checkForPathCollisions(client);
-  const { dropboxRootPath, shareFileRootPath, outlookRootPath } = await getSettings();
+  const { dropboxRootPath, shareFileRootPath, outlookRootPath, outlookClientSubfolder } = await getSettings();
 
   try {
     const dropboxSegment = client.dropboxPath || client.name;
@@ -74,7 +74,8 @@ const setupClientFolders = async (client) => {
 
   if (await isDelegatedConfigAvailable()) {
     try {
-      const resolvedPath = joinFolderPath(outlookRootPath, client.name);
+      const clientSegment = outlookClientSubfolder ? `${client.name}/${outlookClientSubfolder}` : client.name;
+      const resolvedPath = joinFolderPath(outlookRootPath, clientSegment);
       const accessToken = await getAccessTokenFromRefreshToken();
       const folderId = await findOrCreateOutlookFolder(resolvedPath, accessToken, undefined);
       client.outlookFolderId = folderId;

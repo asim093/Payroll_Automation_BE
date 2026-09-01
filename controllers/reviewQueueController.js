@@ -2,9 +2,7 @@ const ReviewQueue = require('../models/ReviewQueue');
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
 const Client = require('../models/Client');
-const { getEmailAttachments } = require('../services/graphService');
-const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthService');
-const { completeFileProcessing } = require('../services/emailProcessor');
+const { resolveOneReviewItem } = require('../services/reviewResolutionService');
 
 const VALID_TYPES = ['email', 'file'];
 const VALID_REASONS = [
@@ -122,90 +120,6 @@ exports.updateReviewQueueEntry = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-};
-
-const claimReviewItem = async (reviewItemId, client) =>
-  ReviewQueue.findOneAndUpdate(
-    { _id: reviewItemId, resolvedClientId: null },
-    { resolvedClientId: client._id, resolvedBy: 'manual' }
-  );
-
-const releaseReviewItemClaim = async (reviewItemId) =>
-  ReviewQueue.findByIdAndUpdate(reviewItemId, { resolvedClientId: null });
-
-const resolveOneReviewItem = async (reviewItem, client) => {
-  const claimed = await claimReviewItem(reviewItem._id, client);
-  if (!claimed) {
-    return { error: 'Already resolved' };
-  }
-
-  if (reviewItem.type === 'email') {
-    const emailLog = await EmailLog.findById(reviewItem.referenceId);
-    if (!emailLog) {
-      await releaseReviewItemClaim(reviewItem._id);
-      return { error: 'Underlying EmailLog not found for this review item' };
-    }
-
-    try {
-
-      const isDelegated = emailLog.authMode === 'delegated';
-      let accessToken;
-      let mailboxEmail;
-
-      if (isDelegated) {
-        accessToken = await getAccessTokenFromRefreshToken();
-      } else {
-        mailboxEmail = process.env.TEST_MAILBOX_EMAIL;
-        if (!mailboxEmail) {
-          throw new Error('TEST_MAILBOX_EMAIL not configured - cannot re-fetch this email from Outlook.');
-        }
-      }
-
-      const graphAttachments = await getEmailAttachments(mailboxEmail, emailLog.messageId, accessToken);
-      const attachments = (graphAttachments || [])
-        .filter((attachment) => attachment.contentBytes)
-        .map((attachment) => ({ name: attachment.name, contentBase64: attachment.contentBytes }));
-
-      const { savedAttachments, categoryAssigned, outlookCopySaved } = await completeFileProcessing(
-        { messageId: emailLog.messageId, attachments },
-        client,
-        accessToken,
-        isDelegated,
-        'manual'
-      );
-
-      emailLog.matchedClientId = client._id;
-      emailLog.status = 'processed';
-      emailLog.categoryAssigned = categoryAssigned;
-      emailLog.outlookCopySaved = outlookCopySaved;
-      emailLog.attachments = savedAttachments;
-      emailLog.processingError = undefined;
-      emailLog.matchMethod = 'manual';
-      await emailLog.save();
-
-      return { error: null };
-    } catch (processingError) {
-      console.error(
-        `resolveOneReviewItem: file-processing failed for EmailLog ${emailLog._id}: ${processingError.message}`
-      );
-      emailLog.status = 'failed';
-      emailLog.processingError = processingError.message;
-      await emailLog.save();
-      await releaseReviewItemClaim(reviewItem._id);
-      return { error: processingError.message };
-    }
-  }
-
-  if (reviewItem.type === 'file') {
-    await FileLog.findByIdAndUpdate(reviewItem.referenceId, {
-      clientId: client._id,
-      status: 'moved',
-      matchMethod: 'manual',
-    });
-    return { error: null };
-  }
-
-  return { error: `Unknown review-item type "${reviewItem.type}"` };
 };
 
 exports.resolveReviewItem = async (req, res, next) => {
