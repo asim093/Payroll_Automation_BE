@@ -654,6 +654,7 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     unmatchedFolders: 0,
     emptyFoldersSkipped: 0,
     dormantFoldersKept: 0,
+    dormantFoldersSkipped: 0,
     newFiles: [],
     filesSeen: 0,
     unmatchedFilesRecorded: 0,
@@ -685,6 +686,12 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
   });
   const folderMap = await buildActiveClientFolderMap();
 
+  const trackedRows = await UnmatchedShareFileItem.find({ status: 'unresolved' }).select('path itemType').lean();
+  const trackedFolderPaths = new Set(trackedRows.filter((row) => row.itemType === 'folder').map((row) => row.path));
+  const trackedFilePaths = trackedRows.filter((row) => row.itemType === 'file').map((row) => row.path);
+  const folderAlreadyTracked = (folderPath) =>
+    trackedFolderPaths.has(folderPath) || trackedFilePaths.some((filePath) => filePath.startsWith(`${folderPath}/`));
+
   for (const child of topChildren) {
     const name = child.Name || child.FileName || '(unnamed)';
 
@@ -702,6 +709,14 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     result.foldersScanned += 1;
     const folderPath = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
     const matchedClient = folderMap.get(name.trim().toLowerCase());
+
+    const treeProgeny = parseShareFileDate(child.ProgenyEditDate);
+    const treeUntouchedSinceCutoff = Boolean(treeProgeny && treeProgeny < since);
+
+    if (treeUntouchedSinceCutoff && !matchedClient && folderAlreadyTracked(folderPath)) {
+      result.dormantFoldersSkipped = (result.dormantFoldersSkipped || 0) + 1;
+      continue;
+    }
 
     const scanState = { files: [], hasContent: false, capped: false };
     try {

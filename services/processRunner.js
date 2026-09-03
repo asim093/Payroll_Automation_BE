@@ -3,8 +3,8 @@ const { endActivity } = require('./scanActivityService');
 
 const LOCK_STALE_MS = 15 * 60 * 1000;
 
-const runGuardedProcess = async (processKey, work) => {
-  const staleThreshold = new Date(Date.now() - LOCK_STALE_MS);
+const runGuardedProcess = async (processKey, work, { staleMs = LOCK_STALE_MS } = {}) => {
+  const staleThreshold = new Date(Date.now() - staleMs);
   const lockField = `${processKey}.isRunning`;
   const startedAtField = `${processKey}.runStartedAt`;
 

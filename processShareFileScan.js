@@ -135,6 +135,7 @@ const processShareFileScan = async ({ since } = {}) => {
     filesSeen: tree.filesSeen,
     unmatchedFilesRecorded: tree.unmatchedFilesRecorded,
     dormantFoldersKept: tree.dormantFoldersKept,
+    dormantFoldersSkipped: tree.dormantFoldersSkipped,
     filesSkippedBeforeCutoff: tree.filesSkippedBeforeCutoff,
     autoResolvedFolderPlaceholders: tree.autoResolvedFolderPlaceholders,
     supersededFolderPlaceholders: tree.supersededFolderPlaceholders,
