@@ -26,18 +26,17 @@ const buildAttachment = (reportFilePath) => {
   };
 };
 
-const createComplianceReportDraft = async (clientEmail, clientEmailSalutation, reportFilePath, emailSubject, emailBody) => {
+const createComplianceReportDraft = async (clientEmail, reportFilePath, emailSubject, emailBody) => {
   if (!clientEmail) {
     throw new Error('createComplianceReportDraft failed: clientEmail is required.');
   }
 
   const attachment = buildAttachment(reportFilePath);
   const accessToken = await getAccessTokenFromRefreshToken();
-  const bodyContent = `Hi ${clientEmailSalutation}\n\n${emailBody}`;
 
   const messagePayload = {
     subject: emailSubject,
-    body: { contentType: 'Text', content: bodyContent },
+    body: { contentType: 'Text', content: emailBody },
     toRecipients: [{ emailAddress: { address: clientEmail } }],
     attachments: [attachment],
   };

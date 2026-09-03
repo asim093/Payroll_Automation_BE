@@ -32,6 +32,23 @@ const settingsSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    logiFormsFolderPath: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    complianceReportEmailTemplate: {
+      subject: {
+        type: String,
+        trim: true,
+        default: '',
+      },
+      body: {
+        type: String,
+        trim: true,
+        default: '',
+      },
+    },
 
     mailSyncIntervalMinutes: {
       type: Number,

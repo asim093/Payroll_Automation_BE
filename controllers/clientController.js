@@ -6,6 +6,7 @@ const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { setupClientFolders } = require('../services/clientFolderSetupService');
 const { deleteClientFolders } = require('../services/clientFolderCleanupService');
 const { syncLegacyRulesForClient, deleteAllRulesForClient } = require('../services/matchingRuleSyncService');
+const { listPayrollFiles } = require('../services/dropboxService');
 
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -325,6 +326,24 @@ exports.retryFolderSetup = async (req, res, next) => {
     await client.save();
 
     res.status(200).json(client);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+exports.getPayrollFiles = async (req, res, next) => {
+  try {
+    const client = await Client.findById(req.params.id);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+    if (!client.dropboxPath) {
+      return res.status(200).json({ files: [] });
+    }
+
+    const files = await listPayrollFiles(client.dropboxPath, client.dropboxPathIsAbsolute);
+    res.status(200).json({ files });
   } catch (error) {
     next(error);
   }

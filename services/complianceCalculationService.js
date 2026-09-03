@@ -38,6 +38,8 @@ const getWeekEndingSunday = (date) => {
 
 const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
+const normalizeStatusValue = (value) => String(value ?? '').trim().toLowerCase();
+
 // @param payrollRecords - Phase-2's parsePayrollFile() output:
 //   Array<{startDate, employeeName, ssn, email}>
 // @param logiFormsData - Array<{ssn, status}> - mocked for now, will come
@@ -53,7 +55,7 @@ const calculateComplianceStatus = async (payrollRecords, logiFormsData) => {
 
   const complianceStatuses = await ComplianceStatus.find().lean();
   const completeStatusValues = new Set(
-    complianceStatuses.filter((entry) => entry.isComplete).map((entry) => entry.statusValue)
+    complianceStatuses.filter((entry) => entry.isComplete).map((entry) => normalizeStatusValue(entry.statusValue))
   );
 
   return payrollRecords.map((record) => {
@@ -66,7 +68,7 @@ const calculateComplianceStatus = async (payrollRecords, logiFormsData) => {
     // the real status is preserved, only isComplete is false, so a report
     // reader can see exactly what LogiForms said instead of a generic label.
     const status = matchedStatus || 'Incomplete';
-    const isComplete = matchedStatus ? completeStatusValues.has(matchedStatus) : false;
+    const isComplete = matchedStatus ? completeStatusValues.has(normalizeStatusValue(matchedStatus)) : false;
 
     return {
       ...record,

@@ -7,6 +7,8 @@ const DEFAULTS = {
   shareFileClientSubfolder: '',
   outlookRootPath: 'Clients',
   outlookClientSubfolder: '',
+  logiFormsFolderPath: '',
+  complianceReportEmailTemplate: { subject: '', body: '' },
   mailSyncIntervalMinutes: 5,
   shareFileBridgeIntervalMinutes: 5,
 };
@@ -59,6 +61,15 @@ const updateSettings = async (updates) => {
   }
   if (updates.outlookClientSubfolder !== undefined) {
     settings.outlookClientSubfolder = updates.outlookClientSubfolder;
+  }
+  if (updates.logiFormsFolderPath !== undefined) {
+    settings.logiFormsFolderPath = updates.logiFormsFolderPath;
+  }
+  if (updates.complianceReportEmailTemplate !== undefined) {
+    settings.complianceReportEmailTemplate = {
+      subject: updates.complianceReportEmailTemplate.subject ?? '',
+      body: updates.complianceReportEmailTemplate.body ?? '',
+    };
   }
   if (updates.mailSyncIntervalMinutes !== undefined) {
     settings.mailSyncIntervalMinutes = clampIntervalMinutes(

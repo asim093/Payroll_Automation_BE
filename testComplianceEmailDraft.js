@@ -41,10 +41,9 @@ const run = async () => {
     console.log('\n=== TEST 1: createComplianceReportDraft() - real Graph API call ===');
     const draftResult = await createComplianceReportDraft(
       TARGET_EMAIL,
-      'Marcel',
       reportPath,
       'Compliance Report - Acme Corp (TEST DRAFT - please ignore)',
-      'Attached is the compliance report for this period. This is an automated test draft and was not sent.'
+      'Hi Marcel\n\nAttached is the compliance report for this period. This is an automated test draft and was not sent.'
     );
     console.log('Draft creation result:', JSON.stringify(draftResult, null, 2));
 

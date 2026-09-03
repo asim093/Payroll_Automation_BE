@@ -1,83 +1,95 @@
-const MOCK_LOGIFORMS_RECORDS = [
-  { ssn: '111-11-1111', status: 'New', dateSubmitted: '2024-01-05', ein: '12-3456789' },
-  { ssn: '111-11-1112', status: 'DNQ', dateSubmitted: '2024-01-06', ein: '12-3456789' },
-  { ssn: '111-11-1113', status: 'Qualified', dateSubmitted: '2024-01-07', ein: '12-3456789' },
-  { ssn: '111-11-1114', status: '', dateSubmitted: '2024-01-08', ein: '12-3456789' },
-  { ssn: '111-11-1115', status: 'Processed', dateSubmitted: '2024-01-09', ein: '12-3456789' },
-  { ssn: '222-22-2221', status: 'Certified', dateSubmitted: '2024-01-10', ein: '98-7654321' },
-  { ssn: '222-22-2222', status: 'Denial', dateSubmitted: '2024-01-11', ein: '98-7654321' },
-  { ssn: '222-22-2223', status: 'Awaiting Docs', dateSubmitted: '2024-01-12', ein: '98-7654321' },
-  { ssn: '222-22-2224', status: 'New', dateSubmitted: '2024-01-13', ein: '98-7654321' },
-  { ssn: '222-22-2225', status: '', dateSubmitted: '2024-01-14', ein: '98-7654321' },
-  { ssn: '333-33-3331', status: 'Qualified', dateSubmitted: '2024-01-15', ein: '11-2233445' },
-  { ssn: '333-33-3332', status: 'DNQ', dateSubmitted: '2024-01-16', ein: '11-2233445' },
-  { ssn: '333-33-3333', status: 'Processed', dateSubmitted: '2024-01-17', ein: '11-2233445' },
-  { ssn: '333-33-3334', status: 'Certified', dateSubmitted: '2024-01-18', ein: '11-2233445' },
-  { ssn: '333-33-3335', status: 'New', dateSubmitted: '2024-01-19', ein: '11-2233445' },
-];
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const XLSX = require('xlsx');
+const { getSettings } = require('./settingsService');
+const { findLatestLogiFormsCsvInShareFile, downloadFileContentById } = require('./sharefileService');
+const { parseDateValue } = require('./payrollFileParserService');
 
-const isMockMode = (apiKey) => {
-  if (process.env.LOGIFORMS_MOCK_MODE === 'true') return true;
-  const trimmed = String(apiKey ?? '').trim();
-  return trimmed === '' || trimmed.toLowerCase() === 'placeholder';
+const EXPECTED_HEADERS = {
+  dateSubmitted: 'DateSubmitted',
+  ein: 'EIN',
+  ssn: 'SSN',
+  status: 'Status',
 };
 
-const buildRequestUrl = (apiUrl, dateRange) => {
-  const url = new URL(apiUrl);
-  if (dateRange?.from) url.searchParams.set('from', dateRange.from);
-  if (dateRange?.to) url.searchParams.set('to', dateRange.to);
-  return url.toString();
-};
-
-const normalizeLogiFormsResponse = (data) => {
-  const records = Array.isArray(data) ? data : data?.records || data?.data || data?.results || [];
-  return records.map((record) => ({
-    ssn: record.ssn ?? record.SSN ?? '',
-    status: record.status ?? record.Status ?? '',
-    dateSubmitted: record.dateSubmitted ?? record.date_submitted ?? record.DateSubmitted ?? '',
-    ein: record.ein ?? record.EIN ?? record.fein ?? record.FEIN ?? '',
-  }));
-};
-
-const fetchLogiFormsData = async (apiUrl, apiKey, dateRange) => {
-  if (isMockMode(apiKey)) {
-    return MOCK_LOGIFORMS_RECORDS;
-  }
-
-  if (!apiUrl) {
-    throw new Error('LogiForms API failed: LOGIFORMS_API_URL is not set.');
-  }
-
-  let response;
-  try {
-    response = await fetch(buildRequestUrl(apiUrl, dateRange), {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-  } catch (error) {
-    throw new Error(`LogiForms API failed: network error - ${error.message}`);
-  }
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`LogiForms API failed: HTTP ${response.status} - ${body}`);
-  }
-
-  let data;
-  try {
-    data = await response.json();
-  } catch (error) {
-    throw new Error(`LogiForms API failed: could not parse response as JSON - ${error.message}`);
-  }
-
-  return normalizeLogiFormsResponse(data);
-};
-
+const normalizeHeader = (header) => String(header ?? '').trim().toLowerCase();
 const normalizeFein = (value) => String(value ?? '').replace(/[^0-9]/g, '');
+const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
-const fetchLogiFormsDataForClient = async (fein, apiUrl, apiKey, dateRange) => {
-  const allRecords = await fetchLogiFormsData(apiUrl, apiKey, dateRange);
+const parseLogiFormsCsv = (localFilePath, fein) => {
+  if (!fs.existsSync(localFilePath)) {
+    throw new Error(`LogiForms file not found: ${localFilePath}`);
+  }
+
+  const workbook = XLSX.readFile(localFilePath, { cellDates: true, raw: true });
+  const firstSheetName = workbook.SheetNames[0];
+  if (!firstSheetName) {
+    throw new Error(`LogiForms file has no sheets: ${localFilePath}`);
+  }
+
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], {
+    header: 1,
+    defval: null,
+    raw: true,
+  });
+  if (rows.length === 0) {
+    throw new Error(`LogiForms file is empty: ${localFilePath}`);
+  }
+
+  const normalizedFileHeaders = rows[0].map((header) => normalizeHeader(header));
+
+  const columnIndex = {};
+  for (const [field, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
+    const index = normalizedFileHeaders.indexOf(normalizeHeader(expectedHeader));
+    if (index === -1) {
+      throw new Error(`LogiForms file is missing required column "${expectedHeader}": ${localFilePath}`);
+    }
+    columnIndex[field] = index;
+  }
+
   const normalizedFein = normalizeFein(fein);
-  return allRecords.filter((record) => normalizeFein(record.ein) === normalizedFein);
+  const records = [];
+
+  for (const rawRow of rows.slice(1)) {
+    const einValue = rawRow[columnIndex.ein];
+    if (normalizeFein(einValue) !== normalizedFein) continue;
+
+    const dateSubmitted = parseDateValue(rawRow[columnIndex.dateSubmitted]);
+    const ssn = normalizeSsn(rawRow[columnIndex.ssn]);
+    const rawStatus = rawRow[columnIndex.status];
+    const status = rawStatus === null || rawStatus === undefined ? '' : String(rawStatus).trim();
+
+    if (!dateSubmitted || !ssn || !status) continue;
+
+    records.push({ dateSubmitted, ssn, status, ein: normalizedFein });
+  }
+
+  records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
+  return records;
 };
 
-module.exports = { fetchLogiFormsData, fetchLogiFormsDataForClient };
+const fetchLogiFormsDataForClient = async (fein) => {
+  const { logiFormsFolderPath } = await getSettings();
+  if (!logiFormsFolderPath) {
+    throw new Error('LogiForms folder path is not configured. Set "LogiForms Folder Path" on the Settings page first.');
+  }
+
+  const latestFile = await findLatestLogiFormsCsvInShareFile(logiFormsFolderPath);
+  if (!latestFile) {
+    throw new Error(`No LogiForms CSV file found in ShareFile folder "${logiFormsFolderPath}".`);
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logiforms-'));
+  const localFilePath = path.join(tempDir, latestFile.fileName);
+
+  try {
+    const content = await downloadFileContentById(latestFile.fileId);
+    fs.writeFileSync(localFilePath, content);
+    return parseLogiFormsCsv(localFilePath, fein);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+};
+
+module.exports = { fetchLogiFormsDataForClient, parseLogiFormsCsv };

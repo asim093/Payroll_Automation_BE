@@ -298,7 +298,7 @@ const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, file
 
 const PAYROLL_FILE_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
 
-const findLatestPayrollFile = async (clientFolderSegment, isAbsolute = false) => {
+const listFilesInFolder = async (clientFolderSegment, isAbsolute, extensions, callerLabel) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = createDropboxClient(accessToken);
   const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
@@ -308,23 +308,35 @@ const findLatestPayrollFile = async (clientFolderSegment, isAbsolute = false) =>
     response = await dbx.filesListFolder({ path: folderPath });
   } catch (error) {
     const errorSummary = error?.error?.error_summary || '';
-    if (errorSummary.startsWith('path/not_found')) return null;
-    console.error(`findLatestPayrollFile ERROR (listing "${folderPath}"): ${formatError(error)}`);
+    if (errorSummary.startsWith('path/not_found')) return [];
+    console.error(`${callerLabel} ERROR (listing "${folderPath}"): ${formatError(error)}`);
     throw error;
   }
 
   const candidateFiles = response.result.entries.filter(
     (entry) =>
       entry['.tag'] === 'file' &&
-      PAYROLL_FILE_EXTENSIONS.some((extension) => entry.name.toLowerCase().endsWith(extension))
+      extensions.some((extension) => entry.name.toLowerCase().endsWith(extension))
   );
 
-  if (candidateFiles.length === 0) return null;
-
   candidateFiles.sort((a, b) => new Date(b.server_modified) - new Date(a.server_modified));
-  const latest = candidateFiles[0];
-  return { name: latest.name, path: latest.path_lower, modifiedAt: latest.server_modified };
+  return candidateFiles.map((entry) => ({
+    name: entry.name,
+    path: entry.path_lower,
+    modifiedAt: entry.server_modified,
+  }));
 };
+
+const findLatestFileInFolder = async (clientFolderSegment, isAbsolute, extensions, callerLabel) => {
+  const files = await listFilesInFolder(clientFolderSegment, isAbsolute, extensions, callerLabel);
+  return files.length === 0 ? null : files[0];
+};
+
+const findLatestPayrollFile = (clientFolderSegment, isAbsolute = false) =>
+  findLatestFileInFolder(clientFolderSegment, isAbsolute, PAYROLL_FILE_EXTENSIONS, 'findLatestPayrollFile');
+
+const listPayrollFiles = (clientFolderSegment, isAbsolute = false) =>
+  listFilesInFolder(clientFolderSegment, isAbsolute, PAYROLL_FILE_EXTENSIONS, 'listPayrollFiles');
 
 const downloadDropboxFileToLocal = async (dropboxFilePath, localFilePath) => {
   const accessToken = await getDropboxAccessToken();
@@ -380,6 +392,7 @@ module.exports = {
   moveDropboxItemToClientFolder,
   getDropboxAccessToken,
   findLatestPayrollFile,
+  listPayrollFiles,
   downloadDropboxFileToLocal,
   downloadDropboxFileBuffer,
   uploadReportFile,

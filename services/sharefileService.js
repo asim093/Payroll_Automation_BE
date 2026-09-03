@@ -279,6 +279,61 @@ const getLatestFileInShareFileFolder = async (clientFolderSegment, isAbsolute = 
   }
 };
 
+const findLatestLogiFormsCsvInShareFile = async (folderPath) => {
+  const cleanPath = String(folderPath || '')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/');
+
+  if (!cleanPath) {
+    throw new Error('LogiForms ShareFile folder path is empty.');
+  }
+
+  try {
+    const { apiBase, authHeaders, rootId } = await getShareFileContext();
+
+    const folderResponse = await fetch(
+      `${apiBase}/Items(${rootId})/ByPath?path=${encodeURIComponent(cleanPath)}`,
+      { headers: authHeaders }
+    );
+    if (!folderResponse.ok) {
+      const errorBody = await folderResponse.text();
+      throw new Error(`ShareFile folder not found for "${cleanPath}" (${folderResponse.status}): ${errorBody}`);
+    }
+    const folder = await folderResponse.json();
+
+    const childrenResponse = await fetch(`${apiBase}/Items(${folder.Id})/Children`, { headers: authHeaders });
+    if (!childrenResponse.ok) {
+      const errorBody = await childrenResponse.text();
+      throw new Error(`Could not list files in "${cleanPath}" (${childrenResponse.status}): ${errorBody}`);
+    }
+    const childrenData = await childrenResponse.json();
+
+    const csvFiles = (childrenData.value || [])
+      .filter(isFileItem)
+      .filter((item) => (item.Name || item.FileName || '').toLowerCase().endsWith('.csv'));
+
+    if (csvFiles.length === 0) {
+      return null;
+    }
+
+    const getTimestamp = (item) =>
+      new Date(item.CreationDate || item.ClientModifiedDate || item.ProgenyEditDate || 0).getTime();
+    csvFiles.sort((a, b) => getTimestamp(b) - getTimestamp(a));
+
+    const latest = csvFiles[0];
+    return {
+      fileName: latest.Name || latest.FileName,
+      fileId: latest.Id,
+      modifiedAt: latest.CreationDate || latest.ClientModifiedDate || latest.ProgenyEditDate || null,
+    };
+  } catch (error) {
+    console.error(`findLatestLogiFormsCsvInShareFile ERROR ("${cleanPath}"): ${formatError(error)}`);
+    throw error;
+  }
+};
+
 const fetchFileFromShareFile = async (clientFolderSegment, fileName, isAbsolute = false) => {
   try {
     let fileId;
@@ -594,6 +649,7 @@ module.exports = {
   getShareFileAccessToken,
   getShareFileContext,
   getLatestFileInShareFileFolder,
+  findLatestLogiFormsCsvInShareFile,
   fetchFileFromShareFile,
   scanShareFileForNewFiles,
   ensureShareFileFolderExists,

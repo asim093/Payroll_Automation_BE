@@ -9,9 +9,13 @@ const { fetchLogiFormsDataForClient } = require('./logiFormsService');
 const { calculateComplianceStatus, summarizeByWeek } = require('./complianceCalculationService');
 const { generateAdminReport, generateClientReport, saveReportToFile } = require('./complianceReportGeneratorService');
 const { createComplianceReportDraft } = require('./complianceEmailDraftService');
+const { getSettings } = require('./settingsService');
+const { applyMergeFields } = require('../utils/applyMergeFields');
 const { formatError } = require('../utils/formatError');
 
 const COMPLIANCE_REPORTS_SUBFOLDER = 'Compliance Reports';
+const DEFAULT_SUBJECT_TEMPLATE = 'Compliance Report - {{Client Name}}';
+const DEFAULT_BODY_TEMPLATE = '{{Salutation}}\n\nPlease find attached the compliance report for this period.';
 
 const logFailure = async (clientId, error) => {
   try {
@@ -53,11 +57,7 @@ const generateComplianceReportForClient = async (clientId) => {
 
     const payrollRecords = await parsePayrollFile(localPayrollPath);
 
-    const logiFormsData = await fetchLogiFormsDataForClient(
-      client.fein,
-      process.env.LOGIFORMS_API_URL,
-      process.env.LOGIFORMS_API_KEY
-    );
+    const logiFormsData = await fetchLogiFormsDataForClient(client.fein);
 
     const calculatedRecords = await calculateComplianceStatus(payrollRecords, logiFormsData);
     const weeklyStats = summarizeByWeek(calculatedRecords);
@@ -85,12 +85,20 @@ const generateComplianceReportForClient = async (clientId) => {
     let emailStatus = 'Skipped-No-Email';
     if (client.complianceReportEmailDistribution) {
       try {
+        const { complianceReportEmailTemplate } = await getSettings();
+        const subjectTemplate = complianceReportEmailTemplate?.subject?.trim() || DEFAULT_SUBJECT_TEMPLATE;
+        const bodyTemplate = complianceReportEmailTemplate?.body?.trim() || DEFAULT_BODY_TEMPLATE;
+        const mergeValues = {
+          'Client Name': client.name || '',
+          'WOTC Form URL': client.wotcFormUrl || '',
+          'Salutation': client.emailSalutation || '',
+        };
+
         await createComplianceReportDraft(
           client.complianceReportEmailDistribution,
-          client.emailSalutation || client.name,
           clientLocalPath,
-          `Compliance Report - ${client.name}`,
-          'Please find attached the compliance report for this period.'
+          applyMergeFields(subjectTemplate, mergeValues),
+          applyMergeFields(bodyTemplate, mergeValues)
         );
         emailStatus = 'Draft-Created';
       } catch (emailError) {
