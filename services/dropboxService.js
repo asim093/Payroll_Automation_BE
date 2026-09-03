@@ -298,10 +298,11 @@ const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, file
 
 const PAYROLL_FILE_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
 
-const listFilesInFolder = async (clientFolderSegment, isAbsolute, extensions, callerLabel) => {
+const MAX_LISTED_FILES = 1000;
+
+const listFolderEntries = async (folderPath, callerLabel) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = createDropboxClient(accessToken);
-  const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
 
   let response;
   try {
@@ -313,18 +314,42 @@ const listFilesInFolder = async (clientFolderSegment, isAbsolute, extensions, ca
     throw error;
   }
 
-  const candidateFiles = response.result.entries.filter(
+  const entries = [...response.result.entries];
+  while (response.result.has_more && entries.length < MAX_LISTED_FILES) {
+    response = await dbx.filesListFolderContinue({ cursor: response.result.cursor });
+    entries.push(...response.result.entries);
+  }
+  return entries;
+};
+
+const toFileSummary = (entry) => ({
+  name: entry.name,
+  path: entry.path_lower,
+  modifiedAt: entry.server_modified,
+});
+
+const listFilesInFolder = async (clientFolderSegment, isAbsolute, extensions, callerLabel) => {
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
+  const entries = await listFolderEntries(folderPath, callerLabel);
+
+  const candidateFiles = entries.filter(
     (entry) =>
       entry['.tag'] === 'file' &&
       extensions.some((extension) => entry.name.toLowerCase().endsWith(extension))
   );
 
   candidateFiles.sort((a, b) => new Date(b.server_modified) - new Date(a.server_modified));
-  return candidateFiles.map((entry) => ({
-    name: entry.name,
-    path: entry.path_lower,
-    modifiedAt: entry.server_modified,
-  }));
+  return candidateFiles.map(toFileSummary);
+};
+
+const listAllFilesInFolder = async (clientFolderSegment, isAbsolute = false) => {
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
+  const entries = await listFolderEntries(folderPath, 'listAllFilesInFolder');
+
+  return entries
+    .filter((entry) => entry['.tag'] === 'file')
+    .sort((a, b) => new Date(b.server_modified) - new Date(a.server_modified))
+    .map(toFileSummary);
 };
 
 const findLatestFileInFolder = async (clientFolderSegment, isAbsolute, extensions, callerLabel) => {
@@ -393,6 +418,7 @@ module.exports = {
   getDropboxAccessToken,
   findLatestPayrollFile,
   listPayrollFiles,
+  listAllFilesInFolder,
   downloadDropboxFileToLocal,
   downloadDropboxFileBuffer,
   uploadReportFile,

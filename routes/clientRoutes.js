@@ -10,6 +10,7 @@ const {
   updateClient,
   retryFolderSetup,
   getPayrollFiles,
+  getClientFolderFiles,
   deleteClient,
 } = require('../controllers/clientController');
 
@@ -18,6 +19,7 @@ router.get('/with-last-activity', getClientsWithLastActivity);
 router.get('/:id/history', getClientHistory);
 router.get('/:id/profile', getClientProfile);
 router.get('/:id/payroll-files', getPayrollFiles);
+router.get('/:id/folder-files', getClientFolderFiles);
 router.post('/:id/retry-folder-setup', retryFolderSetup);
 router.route('/:id').get(getClientById).put(updateClient).delete(deleteClient);
 

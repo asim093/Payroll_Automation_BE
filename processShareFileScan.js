@@ -15,7 +15,10 @@ const PROCESS_KEY = 'shareFileBridge';
 const processShareFileScan = async ({ since } = {}) => {
   const clientsScanned = await Client.countDocuments({ status: 'active' });
 
+  await startPhase(PROCESS_KEY, 'ShareFile Scan', 0);
+  await startItem(PROCESS_KEY, 'Scanning ShareFile client folders...');
   const tree = await scanShareFileClientsTree(since ? { since: new Date(since) } : {});
+  await completeItem(PROCESS_KEY);
   const errors = [...tree.errors];
 
   console.log(

@@ -1,7 +1,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
-const { getRecentEmails, getEmailAttachments } = require('./services/graphService');
+const { getRecentEmails, getEmailAttachments, isInlineImageAttachment } = require('./services/graphService');
 const { getAccessTokenFromRefreshToken, resolveMailboxEmail } = require('./services/delegatedAuthService');
 const { processEmail } = require('./services/emailProcessor');
 const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
@@ -56,7 +56,7 @@ const processInboxDelegated = async (sinceTimestamp) => {
       if (message.hasAttachments) {
         const graphAttachments = await getEmailAttachments(undefined, message.id, accessToken);
         attachments = (graphAttachments || [])
-          .filter((attachment) => attachment.contentBytes)
+          .filter((attachment) => attachment.contentBytes && !isInlineImageAttachment(attachment))
           .map((attachment) => ({
             name: attachment.name,
             contentBase64: attachment.contentBytes,

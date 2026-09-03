@@ -1,7 +1,7 @@
 const ReviewQueue = require('../models/ReviewQueue');
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
-const { getEmailAttachments } = require('./graphService');
+const { getEmailAttachments, isInlineImageAttachment } = require('./graphService');
 const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
 const { completeFileProcessing } = require('./emailProcessor');
 const { withResilientMessageId } = require('./emailIdResolver');
@@ -54,7 +54,7 @@ const resolveOneReviewItem = async (reviewItem, client) => {
         return getEmailAttachments(mailboxEmail, currentId, accessToken);
       });
       const attachments = (graphAttachments || [])
-        .filter((attachment) => attachment.contentBytes)
+        .filter((attachment) => attachment.contentBytes && !isInlineImageAttachment(attachment))
         .map((attachment) => ({ name: attachment.name, contentBase64: attachment.contentBytes }));
 
       const fileResult = await completeFileProcessing(

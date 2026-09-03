@@ -12,6 +12,13 @@ const msalConfig = {
 
 const cca = new ConfidentialClientApplication(msalConfig);
 
+const isInlineImageAttachment = (attachment) =>
+  Boolean(
+    attachment &&
+      (attachment.isInline || attachment.contentId) &&
+      /^image\//i.test(attachment.contentType || '')
+  );
+
 
 const getAccessToken = async () => {
   try {
@@ -438,6 +445,7 @@ module.exports = {
   getAccessToken,
   getRecentEmails,
   getEmailAttachments,
+  isInlineImageAttachment,
   getMessageBody,
   findMessageIdByInternetMessageId,
   assignCategory,

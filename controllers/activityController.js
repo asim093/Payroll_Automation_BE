@@ -1,8 +1,23 @@
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
-const { getMessageBody, getEmailAttachments } = require('../services/graphService');
+const { getMessageBody, getEmailAttachments, isInlineImageAttachment } = require('../services/graphService');
 const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthService');
 const { withResilientMessageId } = require('../services/emailIdResolver');
+
+const embedInlineImages = (html, attachments) => {
+  if (!html || !Array.isArray(attachments) || attachments.length === 0) return html;
+  let output = html;
+  attachments.forEach((attachment) => {
+    if (!attachment || !attachment.contentBytes) return;
+    const dataUri = `data:${attachment.contentType || 'application/octet-stream'};base64,${attachment.contentBytes}`;
+    const tokens = [String(attachment.contentId || '').replace(/^<|>$/g, ''), attachment.name].filter(Boolean);
+    tokens.forEach((token) => {
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      output = output.replace(new RegExp(`cid:${escaped}`, 'gi'), dataUri);
+    });
+  });
+  return output;
+};
 
 exports.getActivityDetails = async (req, res, next) => {
   try {
@@ -84,10 +99,15 @@ exports.getEmailBody = async (req, res, next) => {
         const graphAttachments = await withResilientMessageId(emailLog, mailboxEmail, accessToken, (currentId) =>
           getEmailAttachments(mailboxEmail, currentId, accessToken)
         );
-        attachments = (graphAttachments || []).map((attachment) => ({
-          name: attachment.name,
-          size: attachment.size,
-        }));
+        if (body.bodyContentType === 'html') {
+          body.bodyContent = embedInlineImages(body.bodyContent, graphAttachments || []);
+        }
+        attachments = (graphAttachments || [])
+          .filter((attachment) => !isInlineImageAttachment(attachment))
+          .map((attachment) => ({
+            name: attachment.name,
+            size: attachment.size,
+          }));
       } catch (attachmentError) {
         console.error(`getEmailBody: could not load attachment metadata: ${attachmentError.message}`);
       }
