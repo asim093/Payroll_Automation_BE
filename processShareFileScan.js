@@ -3,28 +3,36 @@ const mongoose = require('mongoose');
 const connectDB = require('./config/db');
 const Client = require('./models/Client');
 const FileLog = require('./models/FileLog');
-const { scanShareFileForNewFiles, scanShareFileRootForUnmatchedItems } = require('./services/sharefileService');
+const { scanShareFileClientsTree } = require('./services/sharefileService');
 const { uploadFileToDropbox, scanDropboxRootForUnmatchedItems } = require('./services/dropboxService');
+const { recordScanErrors } = require('./services/scanErrorLogService');
 const { formatError } = require('./utils/formatError');
 const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
 
+const PROCESS_KEY = 'shareFileBridge';
 
-const processShareFileScan = async () => {
+
+const processShareFileScan = async ({ since } = {}) => {
   const clientsScanned = await Client.countDocuments({ status: 'active' });
-  console.log(`Scanning ShareFile for new files across ${clientsScanned} active client(s)...`);
 
-  const newFiles = await scanShareFileForNewFiles();
+  const tree = await scanShareFileClientsTree(since ? { since: new Date(since) } : {});
+  const errors = [...tree.errors];
+
+  console.log(
+    `Scanned ${tree.foldersScanned} ShareFile folder(s) since ${tree.since} - ` +
+      `${tree.matchedFolders} matched, ${tree.unmatchedFolders} unmatched.`
+  );
 
   let saved = 0;
   let failed = 0;
 
-  await startPhase('shareFileBridge', 'ShareFile Scan', newFiles.length);
+  await startPhase(PROCESS_KEY, 'ShareFile Scan', tree.newFiles.length);
 
-  if (newFiles.length === 0) {
-    console.log('[SHAREFILE SCAN] No new files found.');
+  if (tree.newFiles.length === 0) {
+    console.log('[SHAREFILE SCAN] No new files to copy for matched clients.');
   } else {
-    for (const file of newFiles) {
-      await startItem('shareFileBridge', `${file.fileName} (${file.clientName})`);
+    for (const file of tree.newFiles) {
+      await startItem(PROCESS_KEY, `${file.fileName} (${file.clientName})`);
 
       try {
         const dropboxPath = await uploadFileToDropbox(
@@ -35,90 +43,110 @@ const processShareFileScan = async () => {
           file.dropboxIsAbsolute
         );
 
-        await FileLog.create({
-          source: 'sharefile',
-          sourceFileId: file.fileId,
-          clientId: file.clientId,
-          originalName: file.fileName,
-          destinationPath: dropboxPath,
-          destination: 'dropbox',
-          status: 'moved',
-          matchMethod: 'folder_scan',
-          processedAt: new Date(),
-        });
+        await FileLog.findOneAndUpdate(
+          { source: 'sharefile', sourceFileId: file.fileId, clientId: file.clientId },
+          {
+            $set: {
+              source: 'sharefile',
+              sourceFileId: file.fileId,
+              clientId: file.clientId,
+              originalName: file.fileName,
+              destinationPath: dropboxPath,
+              destination: 'dropbox',
+              status: 'moved',
+              matchMethod: 'folder_scan',
+              processedAt: new Date(),
+              sourceCreatedAt: file.sourceCreatedAt || null,
+            },
+            $unset: { errorMessage: 1 },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
 
         saved++;
-        console.log(`[SHAREFILE SCAN] New file found for ${file.clientName}: ${file.fileName} - copied to Dropbox`);
+        console.log(`[SHAREFILE SCAN] New file for ${file.clientName}: ${file.fileName} - copied to Dropbox`);
       } catch (error) {
         failed++;
-        console.error(
-          `[SHAREFILE SCAN] ERROR copying "${file.fileName}" for ${file.clientName} to Dropbox: ${formatError(error)}`
-        );
-       
+        const message = `Could not copy "${file.fileName}" for ${file.clientName} to Dropbox: ${formatError(error)}`;
+        console.error(`[SHAREFILE SCAN] ERROR ${message}`);
+        errors.push({ scope: `${file.clientName}/${file.fileName}`, message });
+
         try {
-          await FileLog.create({
-            source: 'sharefile',
-            sourceFileId: file.fileId,
-            clientId: file.clientId,
-            originalName: file.fileName,
-            destination: 'dropbox',
-            status: 'failed',
-            errorMessage: formatError(error),
-            matchMethod: 'folder_scan',
-            processedAt: new Date(),
-          });
-        } catch (logError) {
-          console.error(
-            `[SHAREFILE SCAN] Could not even record the failure for "${file.fileName}": ${formatError(logError)}`
+          await FileLog.findOneAndUpdate(
+            { source: 'sharefile', sourceFileId: file.fileId, clientId: file.clientId },
+            {
+              $set: {
+                source: 'sharefile',
+                sourceFileId: file.fileId,
+                clientId: file.clientId,
+                originalName: file.fileName,
+                destination: 'dropbox',
+                status: 'failed',
+                errorMessage: formatError(error),
+                matchMethod: 'folder_scan',
+                processedAt: new Date(),
+                sourceCreatedAt: file.sourceCreatedAt || null,
+              },
+            },
+            { upsert: true, setDefaultsOnInsert: true }
           );
+        } catch (logError) {
+          console.error(`[SHAREFILE SCAN] Could not record the failure for "${file.fileName}": ${formatError(logError)}`);
         }
       }
 
-      await completeItem('shareFileBridge');
+      await completeItem(PROCESS_KEY);
     }
   }
 
 
-  
-  await startItem('shareFileBridge', 'Scanning ShareFile for orphaned folders/files...');
-  let orphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
-  try {
-    orphanScan = await scanShareFileRootForUnmatchedItems();
-  } catch (error) {
-    console.error(`[SHAREFILE ORPHAN SCAN] ERROR: ${formatError(error)}`);
-  }
-  await completeItem('shareFileBridge');
-
-
-  await startItem('shareFileBridge', 'Scanning Dropbox for orphaned folders/files...');
+  await startItem(PROCESS_KEY, 'Scanning Dropbox for orphaned folders/files...');
   let dropboxOrphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
   try {
     dropboxOrphanScan = await scanDropboxRootForUnmatchedItems();
   } catch (error) {
-    console.error(`[DROPBOX ORPHAN SCAN] ERROR: ${formatError(error)}`);
+    const message = `Dropbox orphan scan failed: ${formatError(error)}`;
+    console.error(`[DROPBOX ORPHAN SCAN] ERROR: ${message}`);
+    errors.push({ scope: 'dropbox-orphan-scan', message });
   }
-  await completeItem('shareFileBridge');
+  await completeItem(PROCESS_KEY);
+
+  if (errors.length > 0) {
+    await recordScanErrors(PROCESS_KEY, errors);
+  }
 
   console.log('\n--- ShareFile scan summary ---');
-  console.log(`Clients scanned: ${clientsScanned}`);
-  console.log(`New files found: ${newFiles.length}`);
-  console.log(`Saved to Dropbox: ${saved}`);
-  console.log(`Failed (will retry next scan): ${failed}`);
-  console.log(
-    `ShareFile root-folder items scanned: ${orphanScan.scanned} (new unmatched: ${orphanScan.newOrphans}, auto-resolved: ${orphanScan.autoResolved || 0})`
-  );
-  console.log(
-    `Dropbox root-folder items scanned: ${dropboxOrphanScan.scanned} (new unmatched: ${dropboxOrphanScan.newOrphans}, auto-resolved: ${dropboxOrphanScan.autoResolved || 0})`
-  );
+  console.log(`Active clients: ${clientsScanned}`);
+  console.log(`Folders scanned: ${tree.foldersScanned}`);
+  console.log(`New files copied for matched clients: ${saved} (failed: ${failed})`);
+  console.log(`Unmatched files newly detected (Needs Review): ${tree.unmatchedFilesRecorded}`);
+  console.log(`Files skipped (before ${tree.since} cutoff): ${tree.filesSkippedBeforeCutoff}`);
+  console.log(`Redundant folder placeholders removed (replaced by file-level tracking): ${tree.supersededFolderPlaceholders}`);
+  console.log(`Scan errors persisted: ${errors.length}`);
 
   return {
     clientsScanned,
-    newFilesFound: newFiles.length,
+    foldersScanned: tree.foldersScanned,
+    matchedFolders: tree.matchedFolders,
+    unmatchedFolders: tree.unmatchedFolders,
+    newFilesFound: tree.newFiles.length,
     saved,
     failed,
-    unmatchedItemsScanned: orphanScan.scanned,
-    newUnmatchedItems: orphanScan.newOrphans,
-    autoResolvedUnmatchedItems: orphanScan.autoResolved || 0,
+    filesSeen: tree.filesSeen,
+    unmatchedFilesRecorded: tree.unmatchedFilesRecorded,
+    dormantFoldersKept: tree.dormantFoldersKept,
+    filesSkippedBeforeCutoff: tree.filesSkippedBeforeCutoff,
+    autoResolvedFolderPlaceholders: tree.autoResolvedFolderPlaceholders,
+    supersededFolderPlaceholders: tree.supersededFolderPlaceholders,
+    emptyFoldersSkipped: tree.emptyFoldersSkipped,
+    downloadFailures: tree.downloadFailures,
+    pathMismatchOrphans: tree.pathMismatchOrphans,
+    ingestSince: tree.since,
+    scanErrors: errors.length,
+    scanErrorSample: errors.slice(0, 3).map((entry) => `${entry.scope || 'general'}: ${entry.message}`),
+    unmatchedItemsScanned: tree.foldersScanned,
+    newUnmatchedItems: tree.unmatchedFilesRecorded + tree.dormantFoldersKept,
+    autoResolvedUnmatchedItems: tree.autoResolvedFolderPlaceholders,
     dropboxUnmatchedItemsScanned: dropboxOrphanScan.scanned,
     dropboxNewUnmatchedItems: dropboxOrphanScan.newOrphans,
     dropboxAutoResolvedUnmatchedItems: dropboxOrphanScan.autoResolved || 0,
@@ -135,6 +163,11 @@ if (require.main === module) {
     } catch (error) {
       failedRun = true;
       console.error('Error running ShareFile scan:', error.message);
+      try {
+        await recordScanErrors(PROCESS_KEY, [{ scope: 'sharefile-scan', message: formatError(error) }]);
+      } catch (logError) {
+        console.error('Could not persist the ShareFile scan failure:', logError.message);
+      }
     } finally {
       await mongoose.connection.close();
       console.log('\nConnection closed.');

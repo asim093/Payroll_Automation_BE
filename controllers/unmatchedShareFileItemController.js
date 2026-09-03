@@ -54,17 +54,25 @@ const resolveOneUnmatchedItem = async (item, client) => {
         client.dropboxPathIsAbsolute
       );
 
-      await FileLog.create({
-        source: 'sharefile',
-        sourceFileId: item.itemId,
-        clientId: client._id,
-        originalName: item.name,
-        destinationPath: dropboxPath,
-        destination: 'dropbox',
-        status: 'moved',
-        processedAt: new Date(),
-        matchMethod: 'manual',
-      });
+      await FileLog.findOneAndUpdate(
+        { source: 'sharefile', sourceFileId: item.itemId, clientId: client._id },
+        {
+          $set: {
+            source: 'sharefile',
+            sourceFileId: item.itemId,
+            clientId: client._id,
+            originalName: item.name,
+            destinationPath: dropboxPath,
+            destination: 'dropbox',
+            status: 'moved',
+            processedAt: new Date(),
+            sourceCreatedAt: item.sourceCreatedAt || null,
+            matchMethod: 'manual',
+          },
+          $unset: { errorMessage: 1 },
+        },
+        { upsert: true, setDefaultsOnInsert: true }
+      );
     } catch (error) {
       console.error(`resolveOneUnmatchedItem: could not save file "${item.name}" - ${formatError(error)}`);
       return { error: `Could not save this file to Dropbox: ${formatError(error)}` };

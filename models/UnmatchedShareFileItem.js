@@ -27,6 +27,9 @@ const unmatchedShareFileItemSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    sourceCreatedAt: {
+      type: Date,
+    },
     lastSeenAt: {
       type: Date,
       default: Date.now,

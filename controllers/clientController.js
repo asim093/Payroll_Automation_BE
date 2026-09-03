@@ -64,14 +64,6 @@ exports.createClient = async (req, res, next) => {
       return res.status(400).json({ error: 'name is required' });
     }
 
-    const emailAddresses = matchingRules?.emailAddresses || [];
-    const domains = matchingRules?.domains || [];
-    if (emailAddresses.length === 0 && domains.length === 0) {
-      return res.status(400).json({
-        error: 'At least one matchingRules.emailAddresses or matchingRules.domains entry is required',
-      });
-    }
-
     const duplicate = await findDuplicateByName(name);
     if (duplicate) {
       return res.status(409).json({ error: 'A client with this name already exists' });

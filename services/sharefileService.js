@@ -43,6 +43,101 @@ const getShareFileAccessTokenViaPassword = async () => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const SF_FETCH_TIMEOUT_MS = 30 * 1000;
+const SF_FETCH_MAX_ATTEMPTS = 4;
+const SF_RETRY_BASE_DELAY_MS = 500;
+
+const isTransientStatus = (status) => status === 408 || status === 429 || (status >= 500 && status <= 599);
+
+const sfFetch = async (url, options = {}, label = 'ShareFile request', { onUnauthorized } = {}) => {
+  let lastError;
+  let headers = options.headers;
+  let refreshedAuth = false;
+  for (let attempt = 1; attempt <= SF_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SF_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, headers, signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (response.status === 401 && onUnauthorized && !refreshedAuth) {
+        refreshedAuth = true;
+        console.warn(`${label}: HTTP 401 - forcing a fresh ShareFile token and retrying once.`);
+        try {
+          headers = { ...headers, ...(await onUnauthorized()) };
+          await sleep(SF_RETRY_BASE_DELAY_MS);
+          continue;
+        } catch (refreshError) {
+          console.error(`${label}: token refresh failed - ${refreshError.message}`);
+          return response;
+        }
+      }
+
+      if (isTransientStatus(response.status) && attempt < SF_FETCH_MAX_ATTEMPTS) {
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const delayMs =
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(retryAfter * 1000, 30 * 1000)
+            : SF_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+        console.warn(`${label}: HTTP ${response.status} - retrying in ${delayMs}ms (attempt ${attempt}/${SF_FETCH_MAX_ATTEMPTS}).`);
+        await sleep(delayMs);
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      lastError = error;
+      if (attempt >= SF_FETCH_MAX_ATTEMPTS) break;
+      const delayMs = SF_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      const cause = error.name === 'AbortError' ? `timed out after ${SF_FETCH_TIMEOUT_MS}ms` : error.message;
+      console.warn(`${label}: ${cause} - retrying in ${delayMs}ms (attempt ${attempt}/${SF_FETCH_MAX_ATTEMPTS}).`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError || new Error(`${label} failed after ${SF_FETCH_MAX_ATTEMPTS} attempts`);
+};
+
+const CHILDREN_PAGE_SIZE = 1000;
+
+const parseShareFileDate = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const shareFileItemCreatedAt = (item) => {
+  const isFolder = !isFileItem(item);
+  if (isFolder) {
+    return parseShareFileDate(item.CreationDate || item.ClientCreatedDate);
+  }
+  return parseShareFileDate(
+    item.CreationDate || item.ClientCreatedDate || item.ProgenyEditDate || item.ClientModifiedDate
+  );
+};
+
+const listAllChildren = async (folderId, apiBase, authHeaders, label = 'folder', { onUnauthorized } = {}) => {
+  const collected = [];
+  let skip = 0;
+  for (;;) {
+    const url = `${apiBase}/Items(${folderId})/Children?$top=${CHILDREN_PAGE_SIZE}&$skip=${skip}`;
+    const response = await sfFetch(url, { headers: authHeaders }, `List children of ${label}`, { onUnauthorized });
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Could not list children of ${label} (${response.status}): ${errorBody}`);
+    }
+    const data = await response.json();
+    const page = data.value || [];
+    collected.push(...page);
+
+    const total = Number(data['odata.count']);
+    if (page.length < CHILDREN_PAGE_SIZE) break;
+    if (Number.isFinite(total) && collected.length >= total) break;
+    skip += CHILDREN_PAGE_SIZE;
+  }
+  return collected;
+};
+
 const isTokenRotationRaceError = (error) =>
   error?.code === 'invalid_grant' || /invalid or revoked/i.test(error?.message || '');
 
@@ -207,20 +302,15 @@ const listFilesInShareFileFolder = async (clientFolderSegment, isAbsolute = fals
     const { apiBase, authHeaders, rootId } = await getShareFileContext();
 
     const folderByPathUrl = `${apiBase}/Items(${rootId})/ByPath?path=${encodeURIComponent(folderPath)}`;
-    const folderResponse = await fetch(folderByPathUrl, { headers: authHeaders });
+    const folderResponse = await sfFetch(folderByPathUrl, { headers: authHeaders }, `Resolve "${folderPath}"`);
     if (!folderResponse.ok) {
       const errorBody = await folderResponse.text();
       throw new Error(`ShareFile folder not found for "${folderPath}" (${folderResponse.status}): ${errorBody}`);
     }
     const folder = await folderResponse.json();
 
-    const childrenResponse = await fetch(`${apiBase}/Items(${folder.Id})/Children`, { headers: authHeaders });
-    if (!childrenResponse.ok) {
-      const errorBody = await childrenResponse.text();
-      throw new Error(`Could not list files in "${folderPath}" (${childrenResponse.status}): ${errorBody}`);
-    }
-    const childrenData = await childrenResponse.json();
-    return (childrenData.value || []).filter(isFileItem);
+    const children = await listAllChildren(folder.Id, apiBase, authHeaders, `"${folderPath}"`);
+    return children.filter(isFileItem);
   } catch (error) {
 
     console.error(`listFilesInShareFileFolder ERROR ("${folderPath}"): ${formatError(error)}`);
@@ -374,44 +464,8 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName, isAbsolute 
 };
 
 const scanShareFileForNewFiles = async () => {
-  const activeClients = await Client.find({ status: 'active' });
-  const newFiles = [];
-
-  for (const client of activeClients) {
-    const shareFileFolderSegment = client.shareFilePath || client.name;
-    let files;
-    try {
-      files = await listFilesInShareFileFolder(shareFileFolderSegment, client.shareFilePathIsAbsolute);
-    } catch (error) {
-      console.warn(`  [SHAREFILE SCAN] Skipping "${client.name}" - ${formatError(error)}`);
-      continue;
-    }
-
-    for (const file of files) {
-
-      const alreadyProcessed = await FileLog.findOne({ sourceFileId: file.Id, clientId: client._id });
-      if (alreadyProcessed) continue;
-
-      try {
-        const content = await downloadFileContentById(file.Id);
-        newFiles.push({
-          clientId: client._id,
-          clientName: client.name,
-          dropboxFolderSegment: client.dropboxPath || client.name,
-          dropboxIsAbsolute: client.dropboxPathIsAbsolute,
-          fileName: file.Name || file.FileName,
-          fileId: file.Id,
-          content,
-        });
-      } catch (error) {
-        console.error(
-          `  [SHAREFILE SCAN] Could not download "${file.Name}" for "${client.name}": ${formatError(error)}`
-        );
-      }
-    }
-  }
-
-  return newFiles;
+  const treeScan = await scanShareFileClientsTree();
+  return treeScan.newFiles;
 };
 
 const recordUnmatchedItem = async (item, path, isEmpty = false) => {
@@ -422,11 +476,14 @@ const recordUnmatchedItem = async (item, path, isEmpty = false) => {
     return false;
   }
 
+  const sourceCreatedAt = shareFileItemCreatedAt(item);
+
   const existing = await UnmatchedShareFileItem.findOne({ itemId: item.Id });
   if (existing) {
     if (existing.status === 'unresolved') {
       existing.lastSeenAt = new Date();
       existing.isEmpty = isEmpty;
+      if (sourceCreatedAt && !existing.sourceCreatedAt) existing.sourceCreatedAt = sourceCreatedAt;
       await existing.save();
     }
     return false;
@@ -439,6 +496,7 @@ const recordUnmatchedItem = async (item, path, isEmpty = false) => {
     path,
     isEmpty,
     discoveredAt: new Date(),
+    sourceCreatedAt: sourceCreatedAt || undefined,
     lastSeenAt: new Date(),
     status: 'unresolved',
   });
@@ -446,15 +504,8 @@ const recordUnmatchedItem = async (item, path, isEmpty = false) => {
   return true;
 };
 
-const listChildren = async (folderId, apiBase, authHeaders) => {
-  const response = await fetch(`${apiBase}/Items(${folderId})/Children`, { headers: authHeaders });
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Could not list children of folder ${folderId} (${response.status}): ${errorBody}`);
-  }
-  const data = await response.json();
-  return data.value || [];
-};
+const listChildren = (folderId, apiBase, authHeaders) =>
+  listAllChildren(folderId, apiBase, authHeaders, `folder ${folderId}`);
 
 const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, authHeaders, accountRootId) => {
   if (client.shareFilePathIsAbsolute) return 0;
@@ -520,64 +571,274 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
   return newOrphans;
 };
 
-const scanShareFileRootForUnmatchedItems = async () => {
-  const { shareFileRootPath } = await getSettings();
-  const { apiBase, authHeaders, rootId: accountRootId } = await getShareFileContext();
+const DEFAULT_SHAREFILE_INGEST_SINCE = '2026-08-26T00:00:00.000Z';
+const getShareFileIngestSince = () => {
+  const parsed = new Date(process.env.SHAREFILE_INGEST_SINCE_DATE || DEFAULT_SHAREFILE_INGEST_SINCE);
+  return Number.isNaN(parsed.getTime()) ? new Date(DEFAULT_SHAREFILE_INGEST_SINCE) : parsed;
+};
+const INTER_FOLDER_DELAY_MS = 60;
+const SUBFOLDER_SCAN_MAX_DEPTH = 8;
+const MAX_FILES_PER_CLIENT_FOLDER = 8000;
 
-  let rootId = accountRootId;
-  if (shareFileRootPath) {
-    const rootResponse = await fetch(`${apiBase}/Items(${accountRootId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`, {
-      headers: authHeaders,
-    });
-    if (!rootResponse.ok) {
+const isBeforeCutoff = (file, since) => {
+  const created = shareFileItemCreatedAt(file);
+  return created ? created < since : false;
+};
 
-      console.log(`  [SHAREFILE ORPHAN SCAN] Root path "${shareFileRootPath}" not found - skipping.`);
-      return { scanned: 0, newOrphans: 0 };
+const collectFilesInTree = async (folderId, folderPath, apiBase, authHeaders, options) => {
+  const { onUnauthorized, since, state, depth = 0 } = options;
+
+  const children = await listAllChildren(folderId, apiBase, authHeaders, `"${folderPath}"`, { onUnauthorized });
+
+  for (const child of children) {
+    if (state.files.length >= MAX_FILES_PER_CLIENT_FOLDER) {
+      state.capped = true;
+      return;
     }
-    const rootFolder = await rootResponse.json();
-    rootId = rootFolder.Id;
-  }
 
-  const children = await listChildren(rootId, apiBase, authHeaders);
-
-  const clients = await Client.find();
-
-  const folderNameToClient = new Map();
-  clients.forEach((client) => {
-    if (client.shareFilePathIsAbsolute) return;
-    const topSegment = (client.shareFilePath || client.name).split('/')[0].trim().toLowerCase();
-    if (!folderNameToClient.has(topSegment)) {
-      folderNameToClient.set(topSegment, client);
-    }
-  });
-
-  let newOrphans = 0;
-  let autoResolved = 0;
-  for (const item of children) {
-    const isFile = isFileItem(item);
-    const name = item.Name || item.FileName || '(unnamed)';
-    const matchedClient = !isFile ? folderNameToClient.get(name.trim().toLowerCase()) : undefined;
-
-    if (matchedClient) {
-      const result = await UnmatchedShareFileItem.updateOne(
-        { itemId: item.Id, status: 'unresolved' },
-        { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
-      );
-      autoResolved += result.modifiedCount || 0;
+    if (isFileItem(child)) {
+      const childName = child.Name || child.FileName || '(unnamed)';
+      state.files.push({ item: child, path: `${folderPath}/${childName}` });
       continue;
     }
 
-    const path = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
-    const isEmpty = isFile ? false : (await listChildren(item.Id, apiBase, authHeaders)).length === 0;
-    const created = await recordUnmatchedItem(item, path, isEmpty);
-    if (created) newOrphans++;
+    if (depth >= SUBFOLDER_SCAN_MAX_DEPTH) {
+      state.hasContent = true;
+      continue;
+    }
+
+    const progenyEdit = parseShareFileDate(child.ProgenyEditDate);
+    if (progenyEdit && since && progenyEdit < since) {
+      state.hasContent = true;
+      continue;
+    }
+
+    const childName = child.Name || '(unnamed)';
+    await sleep(15);
+    await collectFilesInTree(child.Id, `${folderPath}/${childName}`, apiBase, authHeaders, {
+      ...options,
+      depth: depth + 1,
+    });
+  }
+};
+
+const buildActiveClientFolderMap = async () => {
+  const activeClients = await Client.find({ status: 'active' });
+  const map = new Map();
+  for (const client of activeClients) {
+    if (client.shareFilePathIsAbsolute) continue;
+    const topSegment = (client.shareFilePath || client.name).split('/')[0].trim().toLowerCase();
+    if (topSegment && !map.has(topSegment)) map.set(topSegment, client);
+  }
+  return map;
+};
+
+const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = {}) => {
+  const { shareFileRootPath } = await getSettings();
+  let context = await getShareFileContext();
+  const { apiBase } = context;
+  const accountRootId = context.rootId;
+  let authHeaders = context.authHeaders;
+
+  const onUnauthorized = async () => {
+    context = await getShareFileContext({ forceRefresh: true });
+    authHeaders = context.authHeaders;
+    return authHeaders;
+  };
+
+  const errors = [];
+  const result = {
+    since: since.toISOString(),
+    foldersScanned: 0,
+    matchedFolders: 0,
+    unmatchedFolders: 0,
+    emptyFoldersSkipped: 0,
+    dormantFoldersKept: 0,
+    newFiles: [],
+    filesSeen: 0,
+    unmatchedFilesRecorded: 0,
+    filesSkippedBeforeCutoff: 0,
+    autoResolvedFolderPlaceholders: 0,
+    supersededFolderPlaceholders: 0,
+    downloadFailures: 0,
+    pathMismatchOrphans: 0,
+    errors,
+  };
+
+  let clientsRootId = accountRootId;
+  if (shareFileRootPath) {
+    const rootResponse = await sfFetch(
+      `${apiBase}/Items(${accountRootId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`,
+      { headers: authHeaders },
+      `Resolve ShareFile root "${shareFileRootPath}"`,
+      { onUnauthorized }
+    );
+    if (!rootResponse.ok) {
+      const body = await rootResponse.text();
+      throw new Error(`ShareFile root path "${shareFileRootPath}" could not be resolved (${rootResponse.status}): ${body}`);
+    }
+    clientsRootId = (await rootResponse.json()).Id;
   }
 
-  for (const client of clients) {
-    newOrphans += await scanClientPathForMismatches(client, shareFileRootPath, apiBase, authHeaders, accountRootId);
+  const topChildren = await listAllChildren(clientsRootId, apiBase, authHeaders, `"${shareFileRootPath || 'root'}"`, {
+    onUnauthorized,
+  });
+  const folderMap = await buildActiveClientFolderMap();
+
+  for (const child of topChildren) {
+    const name = child.Name || child.FileName || '(unnamed)';
+
+    if (isFileItem(child)) {
+      result.filesSeen += 1;
+      if (isBeforeCutoff(child, since)) {
+        result.filesSkippedBeforeCutoff += 1;
+        continue;
+      }
+      const filePath = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
+      if (await recordUnmatchedItem(child, filePath, false)) result.unmatchedFilesRecorded += 1;
+      continue;
+    }
+
+    result.foldersScanned += 1;
+    const folderPath = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
+    const matchedClient = folderMap.get(name.trim().toLowerCase());
+
+    const scanState = { files: [], hasContent: false, capped: false };
+    try {
+      await collectFilesInTree(child.Id, folderPath, apiBase, authHeaders, { onUnauthorized, since, state: scanState });
+    } catch (error) {
+      const message = `Could not scan "${folderPath}": ${formatError(error)}`;
+      console.warn(`  [SHAREFILE TREE SCAN] ${message}`);
+      errors.push({ scope: folderPath, message });
+      continue;
+    }
+    if (scanState.capped) {
+      errors.push({
+        scope: folderPath,
+        message: `"${folderPath}" holds more than ${MAX_FILES_PER_CLIENT_FOLDER} files - only the first ${MAX_FILES_PER_CLIENT_FOLDER} were scanned this cycle.`,
+      });
+    }
+
+    const treeFiles = scanState.files;
+    const postCutoffFiles = treeFiles.filter((entry) => !isBeforeCutoff(entry.item, since));
+    result.filesSeen += treeFiles.length;
+    result.filesSkippedBeforeCutoff += treeFiles.length - postCutoffFiles.length;
+    const folderHasAnyContent = treeFiles.length > 0 || scanState.hasContent;
+
+    if (matchedClient) {
+      result.matchedFolders += 1;
+
+      const autoResolved = await UnmatchedShareFileItem.updateMany(
+        {
+          itemType: 'folder',
+          status: 'unresolved',
+          $or: [{ path: folderPath }, { name: name.trim() }],
+        },
+        { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
+      );
+      result.autoResolvedFolderPlaceholders += autoResolved.modifiedCount || 0;
+
+      const treeFileIds = treeFiles.map((entry) => entry.item.Id);
+      if (treeFileIds.length > 0) {
+        const resolvedFiles = await UnmatchedShareFileItem.updateMany(
+          { itemType: 'file', status: 'unresolved', itemId: { $in: treeFileIds } },
+          { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
+        );
+        result.autoResolvedFolderPlaceholders += resolvedFiles.modifiedCount || 0;
+      }
+
+      const baseSegment = matchedClient.dropboxPath || matchedClient.name;
+      for (const { item: file, path: filePath } of postCutoffFiles) {
+        const alreadyIngested = await FileLog.findOne({
+          source: 'sharefile',
+          sourceFileId: file.Id,
+          clientId: matchedClient._id,
+          status: { $ne: 'failed' },
+        });
+        if (alreadyIngested) continue;
+
+        const relDir = filePath.slice(folderPath.length + 1).split('/').slice(0, -1).join('/');
+        try {
+          const content = await downloadFileContentById(file.Id);
+          result.newFiles.push({
+            clientId: matchedClient._id,
+            clientName: matchedClient.name,
+            dropboxFolderSegment: relDir ? `${baseSegment}/${relDir}` : baseSegment,
+            dropboxIsAbsolute: matchedClient.dropboxPathIsAbsolute,
+            fileName: file.Name || file.FileName,
+            fileId: file.Id,
+            sourceCreatedAt: shareFileItemCreatedAt(file),
+            content,
+          });
+        } catch (error) {
+          result.downloadFailures += 1;
+          const message = `Could not download "${file.Name}" for "${matchedClient.name}": ${formatError(error)}`;
+          console.error(`  [SHAREFILE TREE SCAN] ${message}`);
+          errors.push({ scope: folderPath, message });
+        }
+      }
+
+      await sleep(INTER_FOLDER_DELAY_MS);
+      continue;
+    }
+
+    result.unmatchedFolders += 1;
+
+    if (!folderHasAnyContent) {
+      await recordUnmatchedItem(child, folderPath, true);
+      result.emptyFoldersSkipped += 1;
+      await sleep(INTER_FOLDER_DELAY_MS);
+      continue;
+    }
+
+    if (postCutoffFiles.length === 0) {
+      if (await recordUnmatchedItem(child, folderPath, false)) result.dormantFoldersKept += 1;
+      await sleep(INTER_FOLDER_DELAY_MS);
+      continue;
+    }
+
+    const superseded = await UnmatchedShareFileItem.deleteMany({
+      path: folderPath,
+      itemType: 'folder',
+      status: { $ne: 'resolved' },
+    });
+    result.supersededFolderPlaceholders += superseded.deletedCount || 0;
+
+    for (const { item: file, path: filePath } of postCutoffFiles) {
+      if (await recordUnmatchedItem(file, filePath, false)) result.unmatchedFilesRecorded += 1;
+    }
+
+    await sleep(INTER_FOLDER_DELAY_MS);
   }
 
-  return { scanned: children.length, newOrphans, autoResolved };
+  try {
+    const clients = await Client.find();
+    for (const client of clients) {
+      result.pathMismatchOrphans += await scanClientPathForMismatches(
+        client,
+        shareFileRootPath,
+        apiBase,
+        authHeaders,
+        accountRootId
+      );
+    }
+  } catch (error) {
+    const message = `Path-mismatch scan failed: ${formatError(error)}`;
+    console.warn(`  [SHAREFILE TREE SCAN] ${message}`);
+    errors.push({ scope: 'path-mismatch', message });
+  }
+
+  return result;
+};
+
+const scanShareFileRootForUnmatchedItems = async () => {
+  const treeScan = await scanShareFileClientsTree();
+  return {
+    scanned: treeScan.foldersScanned,
+    newOrphans:
+      treeScan.unmatchedFilesRecorded + treeScan.dormantFoldersKept + treeScan.pathMismatchOrphans,
+    autoResolved: treeScan.autoResolvedFolderPlaceholders,
+  };
 };
 
 const resolveShareFileFolderId = async (fullPath) => {
@@ -652,9 +913,11 @@ module.exports = {
   findLatestLogiFormsCsvInShareFile,
   fetchFileFromShareFile,
   scanShareFileForNewFiles,
+  scanShareFileClientsTree,
   ensureShareFileFolderExists,
   deleteShareFileFolder,
   deleteShareFileItemById,
   scanShareFileRootForUnmatchedItems,
   downloadFileContentById,
+  getShareFileIngestSince,
 };

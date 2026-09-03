@@ -39,6 +39,9 @@ const fileLogSchema = new mongoose.Schema(
     processedAt: {
       type: Date,
     },
+    sourceCreatedAt: {
+      type: Date,
+    },
     status: {
       type: String,
       enum: ['moved', 'needs_review', 'failed'],
