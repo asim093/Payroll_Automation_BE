@@ -468,21 +468,13 @@ const scanShareFileForNewFiles = async () => {
   return treeScan.newFiles;
 };
 
-const recordUnmatchedItem = async (item, path, isEmpty = false) => {
-  const isFile = isFileItem(item);
+const recordUnmatchedFile = async (fileItem, path) => {
+  const sourceCreatedAt = shareFileItemCreatedAt(fileItem);
 
-  if (!isFile && isEmpty) {
-    await UnmatchedShareFileItem.deleteOne({ itemId: item.Id, status: 'unresolved' });
-    return false;
-  }
-
-  const sourceCreatedAt = shareFileItemCreatedAt(item);
-
-  const existing = await UnmatchedShareFileItem.findOne({ itemId: item.Id });
+  const existing = await UnmatchedShareFileItem.findOne({ itemId: fileItem.Id });
   if (existing) {
     if (existing.status === 'unresolved') {
       existing.lastSeenAt = new Date();
-      existing.isEmpty = isEmpty;
       if (sourceCreatedAt) {
         if (!existing.sourceCreatedAt) existing.sourceCreatedAt = sourceCreatedAt;
         if (existing.discoveredAt > sourceCreatedAt) existing.discoveredAt = sourceCreatedAt;
@@ -493,17 +485,15 @@ const recordUnmatchedItem = async (item, path, isEmpty = false) => {
   }
 
   await UnmatchedShareFileItem.create({
-    itemId: item.Id,
-    itemType: isFile ? 'file' : 'folder',
-    name: item.Name || item.FileName || '(unnamed)',
+    itemId: fileItem.Id,
+    name: fileItem.Name || fileItem.FileName || '(unnamed)',
     path,
-    isEmpty,
     discoveredAt: sourceCreatedAt || new Date(),
     sourceCreatedAt: sourceCreatedAt || undefined,
     lastSeenAt: new Date(),
     status: 'unresolved',
   });
-  console.log(`  [SHAREFILE ORPHAN SCAN] New unmatched ${isFile ? 'file' : 'folder'}: "${path}"${isEmpty ? ' (empty)' : ''}`);
+  console.log(`  [SHAREFILE SCAN] New unmatched file: "${path}"`);
   return true;
 };
 
@@ -551,13 +541,9 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
 
     if (level > 0) {
       for (const child of children) {
+        if (!isFileItem(child)) continue;
         const name = child.Name || child.FileName || '(unnamed)';
-        if (!isFileItem(child) && name.trim().toLowerCase() === expectedName.trim().toLowerCase()) {
-          continue;
-        }
-        const childIsFile = isFileItem(child);
-        const childIsEmpty = childIsFile ? false : (await listChildren(child.Id, apiBase, authHeaders)).length === 0;
-        const created = await recordUnmatchedItem(child, `${currentPath}/${name}`, childIsEmpty);
+        const created = await recordUnmatchedFile(child, `${currentPath}/${name}`);
         if (created) newOrphans++;
       }
     }
@@ -606,13 +592,11 @@ const collectFilesInTree = async (folderId, folderPath, apiBase, authHeaders, op
     }
 
     if (depth >= SUBFOLDER_SCAN_MAX_DEPTH) {
-      state.hasContent = true;
       continue;
     }
 
     const progenyEdit = parseShareFileDate(child.ProgenyEditDate);
     if (progenyEdit && since && progenyEdit < since) {
-      state.hasContent = true;
       continue;
     }
 
@@ -655,17 +639,15 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     foldersScanned: 0,
     matchedFolders: 0,
     unmatchedFolders: 0,
-    emptyFoldersSkipped: 0,
-    dormantFoldersKept: 0,
-    dormantFoldersSkipped: 0,
+    foldersSkippedNoRecentActivity: 0,
     newFiles: [],
     filesSeen: 0,
     unmatchedFilesRecorded: 0,
     filesSkippedBeforeCutoff: 0,
-    autoResolvedFolderPlaceholders: 0,
-    supersededFolderPlaceholders: 0,
+    autoResolvedFiles: 0,
     downloadFailures: 0,
-    pathMismatchOrphans: 0,
+    pathMismatchFiles: 0,
+    removedFolderPlaceholders: 0,
     errors,
   };
 
@@ -689,12 +671,6 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
   });
   const folderMap = await buildActiveClientFolderMap();
 
-  const trackedRows = await UnmatchedShareFileItem.find({ status: 'unresolved' }).select('path itemType').lean();
-  const trackedFolderPaths = new Set(trackedRows.filter((row) => row.itemType === 'folder').map((row) => row.path));
-  const trackedFilePaths = trackedRows.filter((row) => row.itemType === 'file').map((row) => row.path);
-  const folderAlreadyTracked = (folderPath) =>
-    trackedFolderPaths.has(folderPath) || trackedFilePaths.some((filePath) => filePath.startsWith(`${folderPath}/`));
-
   for (const child of topChildren) {
     const name = child.Name || child.FileName || '(unnamed)';
 
@@ -705,7 +681,7 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
         continue;
       }
       const filePath = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
-      if (await recordUnmatchedItem(child, filePath, false)) result.unmatchedFilesRecorded += 1;
+      if (await recordUnmatchedFile(child, filePath)) result.unmatchedFilesRecorded += 1;
       continue;
     }
 
@@ -714,19 +690,19 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     const matchedClient = folderMap.get(name.trim().toLowerCase());
 
     const treeProgeny = parseShareFileDate(child.ProgenyEditDate);
-    const treeUntouchedSinceCutoff = Boolean(treeProgeny && treeProgeny < since);
-
-    if (treeUntouchedSinceCutoff && !matchedClient && folderAlreadyTracked(folderPath)) {
-      result.dormantFoldersSkipped = (result.dormantFoldersSkipped || 0) + 1;
+    if (treeProgeny && treeProgeny < since && !matchedClient) {
+      const removed = await UnmatchedShareFileItem.deleteMany({ path: folderPath });
+      result.removedFolderPlaceholders += removed.deletedCount || 0;
+      result.foldersSkippedNoRecentActivity += 1;
       continue;
     }
 
-    const scanState = { files: [], hasContent: false, capped: false };
+    const scanState = { files: [], capped: false };
     try {
       await collectFilesInTree(child.Id, folderPath, apiBase, authHeaders, { onUnauthorized, since, state: scanState });
     } catch (error) {
       const message = `Could not scan "${folderPath}": ${formatError(error)}`;
-      console.warn(`  [SHAREFILE TREE SCAN] ${message}`);
+      console.warn(`  [SHAREFILE SCAN] ${message}`);
       errors.push({ scope: folderPath, message });
       continue;
     }
@@ -741,28 +717,20 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     const postCutoffFiles = treeFiles.filter((entry) => !isBeforeCutoff(entry.item, since));
     result.filesSeen += treeFiles.length;
     result.filesSkippedBeforeCutoff += treeFiles.length - postCutoffFiles.length;
-    const folderHasAnyContent = treeFiles.length > 0 || scanState.hasContent;
+
+    const removed = await UnmatchedShareFileItem.deleteMany({ path: folderPath });
+    result.removedFolderPlaceholders += removed.deletedCount || 0;
 
     if (matchedClient) {
       result.matchedFolders += 1;
 
-      const autoResolved = await UnmatchedShareFileItem.updateMany(
-        {
-          itemType: 'folder',
-          status: 'unresolved',
-          $or: [{ path: folderPath }, { name: name.trim() }],
-        },
-        { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
-      );
-      result.autoResolvedFolderPlaceholders += autoResolved.modifiedCount || 0;
-
       const treeFileIds = treeFiles.map((entry) => entry.item.Id);
       if (treeFileIds.length > 0) {
         const resolvedFiles = await UnmatchedShareFileItem.updateMany(
-          { itemType: 'file', status: 'unresolved', itemId: { $in: treeFileIds } },
+          { status: 'unresolved', itemId: { $in: treeFileIds } },
           { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
         );
-        result.autoResolvedFolderPlaceholders += resolvedFiles.modifiedCount || 0;
+        result.autoResolvedFiles += resolvedFiles.modifiedCount || 0;
       }
 
       const baseSegment = matchedClient.dropboxPath || matchedClient.name;
@@ -791,7 +759,7 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
         } catch (error) {
           result.downloadFailures += 1;
           const message = `Could not download "${file.Name}" for "${matchedClient.name}": ${formatError(error)}`;
-          console.error(`  [SHAREFILE TREE SCAN] ${message}`);
+          console.error(`  [SHAREFILE SCAN] ${message}`);
           errors.push({ scope: folderPath, message });
         }
       }
@@ -801,38 +769,16 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     }
 
     result.unmatchedFolders += 1;
-
-    if (!folderHasAnyContent) {
-      await recordUnmatchedItem(child, folderPath, true);
-      result.emptyFoldersSkipped += 1;
-      await sleep(INTER_FOLDER_DELAY_MS);
-      continue;
-    }
-
-    if (postCutoffFiles.length === 0) {
-      if (await recordUnmatchedItem(child, folderPath, false)) result.dormantFoldersKept += 1;
-      await sleep(INTER_FOLDER_DELAY_MS);
-      continue;
-    }
-
-    const superseded = await UnmatchedShareFileItem.deleteMany({
-      path: folderPath,
-      itemType: 'folder',
-      status: { $ne: 'resolved' },
-    });
-    result.supersededFolderPlaceholders += superseded.deletedCount || 0;
-
     for (const { item: file, path: filePath } of postCutoffFiles) {
-      if (await recordUnmatchedItem(file, filePath, false)) result.unmatchedFilesRecorded += 1;
+      if (await recordUnmatchedFile(file, filePath)) result.unmatchedFilesRecorded += 1;
     }
-
     await sleep(INTER_FOLDER_DELAY_MS);
   }
 
   try {
     const clients = await Client.find();
     for (const client of clients) {
-      result.pathMismatchOrphans += await scanClientPathForMismatches(
+      result.pathMismatchFiles += await scanClientPathForMismatches(
         client,
         shareFileRootPath,
         apiBase,
@@ -842,7 +788,7 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     }
   } catch (error) {
     const message = `Path-mismatch scan failed: ${formatError(error)}`;
-    console.warn(`  [SHAREFILE TREE SCAN] ${message}`);
+    console.warn(`  [SHAREFILE SCAN] ${message}`);
     errors.push({ scope: 'path-mismatch', message });
   }
 
@@ -853,9 +799,8 @@ const scanShareFileRootForUnmatchedItems = async () => {
   const treeScan = await scanShareFileClientsTree();
   return {
     scanned: treeScan.foldersScanned,
-    newOrphans:
-      treeScan.unmatchedFilesRecorded + treeScan.dormantFoldersKept + treeScan.pathMismatchOrphans,
-    autoResolved: treeScan.autoResolvedFolderPlaceholders,
+    newOrphans: treeScan.unmatchedFilesRecorded + treeScan.pathMismatchFiles,
+    autoResolved: treeScan.autoResolvedFiles,
   };
 };
 

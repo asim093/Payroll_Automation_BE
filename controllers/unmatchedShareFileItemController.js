@@ -2,7 +2,7 @@ const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
 const { uploadFileToDropbox } = require('../services/dropboxService');
-const { downloadFileContentById, deleteShareFileItemById } = require('../services/sharefileService');
+const { downloadFileContentById } = require('../services/sharefileService');
 const { formatError } = require('../utils/formatError');
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -40,43 +40,38 @@ const resolveOneUnmatchedItem = async (item, client) => {
     return { error: `This item is already ${item.status}, not unresolved.` };
   }
 
-  if (item.itemType === 'folder') {
-    client.shareFilePath = item.name;
-    await client.save();
-  } else {
-    try {
-      const content = await downloadFileContentById(item.itemId);
-      const dropboxPath = await uploadFileToDropbox(
-        client.dropboxPath || client.name,
-        item.name,
-        content,
-        undefined,
-        client.dropboxPathIsAbsolute
-      );
+  try {
+    const content = await downloadFileContentById(item.itemId);
+    const dropboxPath = await uploadFileToDropbox(
+      client.dropboxPath || client.name,
+      item.name,
+      content,
+      undefined,
+      client.dropboxPathIsAbsolute
+    );
 
-      await FileLog.findOneAndUpdate(
-        { source: 'sharefile', sourceFileId: item.itemId, clientId: client._id },
-        {
-          $set: {
-            source: 'sharefile',
-            sourceFileId: item.itemId,
-            clientId: client._id,
-            originalName: item.name,
-            destinationPath: dropboxPath,
-            destination: 'dropbox',
-            status: 'moved',
-            processedAt: new Date(),
-            sourceCreatedAt: item.sourceCreatedAt || null,
-            matchMethod: 'manual',
-          },
-          $unset: { errorMessage: 1 },
+    await FileLog.findOneAndUpdate(
+      { source: 'sharefile', sourceFileId: item.itemId, clientId: client._id },
+      {
+        $set: {
+          source: 'sharefile',
+          sourceFileId: item.itemId,
+          clientId: client._id,
+          originalName: item.name,
+          destinationPath: dropboxPath,
+          destination: 'dropbox',
+          status: 'moved',
+          processedAt: new Date(),
+          sourceCreatedAt: item.sourceCreatedAt || null,
+          matchMethod: 'manual',
         },
-        { upsert: true, setDefaultsOnInsert: true }
-      );
-    } catch (error) {
-      console.error(`resolveOneUnmatchedItem: could not save file "${item.name}" - ${formatError(error)}`);
-      return { error: `Could not save this file to Dropbox: ${formatError(error)}` };
-    }
+        $unset: { errorMessage: 1 },
+      },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+  } catch (error) {
+    console.error(`resolveOneUnmatchedItem: could not save file "${item.name}" - ${formatError(error)}`);
+    return { error: `Could not save this file to Dropbox: ${formatError(error)}` };
   }
 
   item.status = 'resolved';
@@ -137,14 +132,6 @@ exports.bulkResolveUnmatchedItems = async (req, res, next) => {
         results.push({ itemId, success: false, error: 'Unmatched item not found' });
         continue;
       }
-      if (item.itemType === 'folder') {
-        results.push({
-          itemId,
-          success: false,
-          error: 'Folders can only be assigned one at a time, not in bulk, since each folder belongs to exactly one client.',
-        });
-        continue;
-      }
 
       const { error } = await resolveOneUnmatchedItem(item, client);
       results.push({ itemId, success: !error, error: error || undefined });
@@ -195,30 +182,11 @@ exports.restoreUnmatchedItem = async (req, res, next) => {
 
 exports.deleteUnmatchedItem = async (req, res, next) => {
   try {
-    const item = await UnmatchedShareFileItem.findById(req.params.id);
+    const item = await UnmatchedShareFileItem.findByIdAndDelete(req.params.id);
     if (!item) {
       return res.status(404).json({ error: 'Unmatched item not found' });
     }
-    if (item.status !== 'unresolved') {
-      return res.status(400).json({ error: `This item is already ${item.status}, not unresolved.` });
-    }
-    if (item.itemType !== 'folder' || !item.isEmpty) {
-      return res.status(400).json({
-        error: 'Only empty folders can be deleted here. Assign or dismiss this item instead.',
-      });
-    }
-
-    try {
-      await deleteShareFileItemById(item.itemId);
-    } catch (error) {
-      console.error(`deleteUnmatchedItem: could not delete "${item.path}" - ${formatError(error)}`);
-      return res.status(502).json({ error: `Could not delete this folder from ShareFile: ${formatError(error)}` });
-    }
-
-    item.status = 'dismissed';
-    item.resolvedAt = new Date();
-    await item.save();
-    res.status(200).json(item);
+    res.status(200).json({ message: 'Removed from the review list.' });
   } catch (error) {
     next(error);
   }

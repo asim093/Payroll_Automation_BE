@@ -117,16 +117,17 @@ const processShareFileScan = async ({ since } = {}) => {
 
   console.log('\n--- ShareFile scan summary ---');
   console.log(`Active clients: ${clientsScanned}`);
-  console.log(`Folders scanned: ${tree.foldersScanned}`);
+  console.log(`Folders scanned: ${tree.foldersScanned} (skipped, no recent activity: ${tree.foldersSkippedNoRecentActivity})`);
   console.log(`New files copied for matched clients: ${saved} (failed: ${failed})`);
   console.log(`Unmatched files newly detected (Needs Review): ${tree.unmatchedFilesRecorded}`);
   console.log(`Files skipped (before ${tree.since} cutoff): ${tree.filesSkippedBeforeCutoff}`);
-  console.log(`Redundant folder placeholders removed (replaced by file-level tracking): ${tree.supersededFolderPlaceholders}`);
+  console.log(`Legacy folder placeholders removed: ${tree.removedFolderPlaceholders}`);
   console.log(`Scan errors persisted: ${errors.length}`);
 
   return {
     clientsScanned,
     foldersScanned: tree.foldersScanned,
+    foldersSkippedNoRecentActivity: tree.foldersSkippedNoRecentActivity,
     matchedFolders: tree.matchedFolders,
     unmatchedFolders: tree.unmatchedFolders,
     newFilesFound: tree.newFiles.length,
@@ -134,20 +135,17 @@ const processShareFileScan = async ({ since } = {}) => {
     failed,
     filesSeen: tree.filesSeen,
     unmatchedFilesRecorded: tree.unmatchedFilesRecorded,
-    dormantFoldersKept: tree.dormantFoldersKept,
-    dormantFoldersSkipped: tree.dormantFoldersSkipped,
     filesSkippedBeforeCutoff: tree.filesSkippedBeforeCutoff,
-    autoResolvedFolderPlaceholders: tree.autoResolvedFolderPlaceholders,
-    supersededFolderPlaceholders: tree.supersededFolderPlaceholders,
-    emptyFoldersSkipped: tree.emptyFoldersSkipped,
+    autoResolvedFiles: tree.autoResolvedFiles,
+    removedFolderPlaceholders: tree.removedFolderPlaceholders,
     downloadFailures: tree.downloadFailures,
-    pathMismatchOrphans: tree.pathMismatchOrphans,
+    pathMismatchFiles: tree.pathMismatchFiles,
     ingestSince: tree.since,
     scanErrors: errors.length,
     scanErrorSample: errors.slice(0, 3).map((entry) => `${entry.scope || 'general'}: ${entry.message}`),
     unmatchedItemsScanned: tree.foldersScanned,
-    newUnmatchedItems: tree.unmatchedFilesRecorded + tree.dormantFoldersKept,
-    autoResolvedUnmatchedItems: tree.autoResolvedFolderPlaceholders,
+    newUnmatchedItems: tree.unmatchedFilesRecorded,
+    autoResolvedUnmatchedItems: tree.autoResolvedFiles,
     dropboxUnmatchedItemsScanned: dropboxOrphanScan.scanned,
     dropboxNewUnmatchedItems: dropboxOrphanScan.newOrphans,
     dropboxAutoResolvedUnmatchedItems: dropboxOrphanScan.autoResolved || 0,

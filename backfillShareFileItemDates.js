@@ -7,10 +7,8 @@ const { getShareFileContext } = require('./services/sharefileService');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const pickDate = (item, isFolder) => {
-  const raw = isFolder
-    ? item.CreationDate || item.ClientCreatedDate
-    : item.CreationDate || item.ClientCreatedDate || item.ProgenyEditDate || item.ClientModifiedDate;
+const pickDate = (item) => {
+  const raw = item.CreationDate || item.ClientCreatedDate || item.ProgenyEditDate || item.ClientModifiedDate;
   if (!raw) return null;
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -46,7 +44,7 @@ const pickDate = (item, isFolder) => {
           await sleep(40);
           continue;
         }
-        source = pickDate(await res.json(), item.itemType === 'folder');
+        source = pickDate(await res.json());
         fetched += 1;
         await sleep(30);
         if (!source) {

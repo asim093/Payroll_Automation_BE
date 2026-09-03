@@ -8,11 +8,6 @@ const unmatchedShareFileItemSchema = new mongoose.Schema(
       unique: true,
       index: true,
     },
-    itemType: {
-      type: String,
-      enum: ['file', 'folder'],
-      required: true,
-    },
     name: {
       type: String,
       required: true,
@@ -38,10 +33,6 @@ const unmatchedShareFileItemSchema = new mongoose.Schema(
       type: String,
       enum: ['unresolved', 'resolved', 'dismissed'],
       default: 'unresolved',
-    },
-    isEmpty: {
-      type: Boolean,
-      default: false,
     },
     resolvedClientId: {
       type: mongoose.Schema.Types.ObjectId,
