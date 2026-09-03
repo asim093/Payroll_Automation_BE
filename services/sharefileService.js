@@ -483,7 +483,10 @@ const recordUnmatchedItem = async (item, path, isEmpty = false) => {
     if (existing.status === 'unresolved') {
       existing.lastSeenAt = new Date();
       existing.isEmpty = isEmpty;
-      if (sourceCreatedAt && !existing.sourceCreatedAt) existing.sourceCreatedAt = sourceCreatedAt;
+      if (sourceCreatedAt) {
+        if (!existing.sourceCreatedAt) existing.sourceCreatedAt = sourceCreatedAt;
+        if (existing.discoveredAt > sourceCreatedAt) existing.discoveredAt = sourceCreatedAt;
+      }
       await existing.save();
     }
     return false;
@@ -495,7 +498,7 @@ const recordUnmatchedItem = async (item, path, isEmpty = false) => {
     name: item.Name || item.FileName || '(unnamed)',
     path,
     isEmpty,
-    discoveredAt: new Date(),
+    discoveredAt: sourceCreatedAt || new Date(),
     sourceCreatedAt: sourceCreatedAt || undefined,
     lastSeenAt: new Date(),
     status: 'unresolved',

@@ -1,4 +1,5 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const mongoose = require('mongoose');
 const connectDB = require('./config/db');
 const UnmatchedShareFileItem = require('./models/UnmatchedShareFileItem');
@@ -20,45 +21,54 @@ const pickDate = (item, isFolder) => {
   try {
     await connectDB();
 
-    const items = await UnmatchedShareFileItem.find({
-      status: { $in: ['unresolved', 'dismissed'] },
-      $or: [{ sourceCreatedAt: { $exists: false } }, { sourceCreatedAt: null }],
-    }).lean();
+    const items = await UnmatchedShareFileItem.find({ status: { $in: ['unresolved', 'dismissed'] } }).lean();
+    console.log(`[BACKFILL] Checking ${items.length} ShareFile items.`);
 
-    console.log(`[BACKFILL] ${items.length} items need a sourceCreatedAt.`);
+    let ctx = null;
+    let alignedLocally = 0;
+    let fetched = 0;
+    let noDate = 0;
 
-    let ctx = await getShareFileContext();
-    let updated = 0;
-    let missing = 0;
+    for (const item of items) {
+      let source = item.sourceCreatedAt ? new Date(item.sourceCreatedAt) : null;
 
-    for (let i = 0; i < items.length; i += 1) {
-      const item = items[i];
-      const url = `${ctx.apiBase}/Items(${item.itemId})?$select=Id,Name,CreationDate,ClientCreatedDate,ProgenyEditDate,ClientModifiedDate`;
-      let res = await fetch(url, { headers: ctx.authHeaders });
-      if (res.status === 401) {
-        ctx = await getShareFileContext({ forceRefresh: true });
-        res = await fetch(url, { headers: ctx.authHeaders });
-      }
-      if (!res.ok) {
-        missing += 1;
-        console.warn(`  ${item.path}: lookup failed (${res.status})`);
-        await sleep(50);
-        continue;
-      }
-      const meta = await res.json();
-      const date = pickDate(meta, item.itemType === 'folder');
-      if (!date) {
-        missing += 1;
+      if (!source) {
+        if (!ctx) ctx = await getShareFileContext();
+        const url = `${ctx.apiBase}/Items(${item.itemId})?$select=Id,Name,CreationDate,ClientCreatedDate,ProgenyEditDate,ClientModifiedDate`;
+        let res = await fetch(url, { headers: ctx.authHeaders });
+        if (res.status === 401) {
+          ctx = await getShareFileContext({ forceRefresh: true });
+          res = await fetch(url, { headers: ctx.authHeaders });
+        }
+        if (!res.ok) {
+          noDate += 1;
+          console.warn(`  ${item.path}: lookup failed (${res.status})`);
+          await sleep(40);
+          continue;
+        }
+        source = pickDate(await res.json(), item.itemType === 'folder');
+        fetched += 1;
         await sleep(30);
-        continue;
+        if (!source) {
+          noDate += 1;
+          continue;
+        }
       }
-      await UnmatchedShareFileItem.updateOne({ _id: item._id }, { sourceCreatedAt: date });
-      updated += 1;
-      if (updated % 25 === 0) console.log(`  ...${updated}/${items.length}`);
-      await sleep(30);
+
+      const update = {};
+      if (!item.sourceCreatedAt) update.sourceCreatedAt = source;
+      if (!item.discoveredAt || new Date(item.discoveredAt) > source) update.discoveredAt = source;
+
+      if (Object.keys(update).length > 0) {
+        await UnmatchedShareFileItem.updateOne({ _id: item._id }, update);
+        alignedLocally += 1;
+        if (alignedLocally % 50 === 0) console.log(`  ...${alignedLocally} aligned`);
+      }
     }
 
-    console.log(`[BACKFILL] Done. updated: ${updated}, no date found: ${missing}`);
+    console.log(
+      `[BACKFILL] Done. discoveredAt aligned to source date: ${alignedLocally} | looked up from ShareFile: ${fetched} | no date found: ${noDate}`
+    );
   } catch (error) {
     failed = true;
     console.error('[BACKFILL] Failed:', error.message);
