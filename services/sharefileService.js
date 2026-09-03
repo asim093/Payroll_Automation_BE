@@ -566,7 +566,7 @@ const getShareFileIngestSince = () => {
   return Number.isNaN(parsed.getTime()) ? new Date(DEFAULT_SHAREFILE_INGEST_SINCE) : parsed;
 };
 const INTER_FOLDER_DELAY_MS = 60;
-const SUBFOLDER_SCAN_MAX_DEPTH = 8;
+const SUBFOLDER_SCAN_MAX_DEPTH = 10;
 const MAX_FILES_PER_CLIENT_FOLDER = 8000;
 
 const isBeforeCutoff = (file, since) => {
@@ -576,6 +576,10 @@ const isBeforeCutoff = (file, since) => {
 
 const collectFilesInTree = async (folderId, folderPath, apiBase, authHeaders, options) => {
   const { onUnauthorized, since, state, depth = 0 } = options;
+  const visited = options.visited || new Set();
+
+  if (visited.has(folderId)) return;
+  visited.add(folderId);
 
   const children = await listAllChildren(folderId, apiBase, authHeaders, `"${folderPath}"`, { onUnauthorized });
 
@@ -592,6 +596,8 @@ const collectFilesInTree = async (folderId, folderPath, apiBase, authHeaders, op
     }
 
     if (depth >= SUBFOLDER_SCAN_MAX_DEPTH) {
+      state.depthLimited = true;
+      console.warn(`  [SHAREFILE SCAN] Max depth ${SUBFOLDER_SCAN_MAX_DEPTH} reached at "${folderPath}" - deeper subfolders not scanned this cycle.`);
       continue;
     }
 
@@ -604,6 +610,7 @@ const collectFilesInTree = async (folderId, folderPath, apiBase, authHeaders, op
     await sleep(15);
     await collectFilesInTree(child.Id, `${folderPath}/${childName}`, apiBase, authHeaders, {
       ...options,
+      visited,
       depth: depth + 1,
     });
   }
@@ -697,7 +704,7 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
       continue;
     }
 
-    const scanState = { files: [], capped: false };
+    const scanState = { files: [], capped: false, depthLimited: false };
     try {
       await collectFilesInTree(child.Id, folderPath, apiBase, authHeaders, { onUnauthorized, since, state: scanState });
     } catch (error) {
@@ -710,6 +717,12 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
       errors.push({
         scope: folderPath,
         message: `"${folderPath}" holds more than ${MAX_FILES_PER_CLIENT_FOLDER} files - only the first ${MAX_FILES_PER_CLIENT_FOLDER} were scanned this cycle.`,
+      });
+    }
+    if (scanState.depthLimited) {
+      errors.push({
+        scope: folderPath,
+        message: `"${folderPath}" nests deeper than ${SUBFOLDER_SCAN_MAX_DEPTH} levels - files below that depth were not scanned.`,
       });
     }
 
