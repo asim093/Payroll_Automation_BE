@@ -253,12 +253,25 @@ const ensureShareFileFolderExists = async (fullPath) => {
     .filter(Boolean);
 
   try {
-    const { apiBase, authHeaders, rootId } = await getShareFileContext();
-    let currentId = rootId;
+    let context = await getShareFileContext();
+    const { apiBase } = context;
+    let authHeaders = context.authHeaders;
+    const onUnauthorized = async () => {
+      context = await getShareFileContext({ forceRefresh: true });
+      authHeaders = context.authHeaders;
+      return authHeaders;
+    };
+
+    let currentId = context.rootId;
     let anyCreated = false;
 
     for (const segment of segments) {
-      const childrenResponse = await fetch(`${apiBase}/Items(${currentId})/Children`, { headers: authHeaders });
+      const childrenResponse = await sfFetch(
+        `${apiBase}/Items(${currentId})/Children`,
+        { headers: authHeaders },
+        `List children while walking to "${fullPath}"`,
+        { onUnauthorized }
+      );
       if (!childrenResponse.ok) {
         const errorBody = await childrenResponse.text();
         throw new Error(`Could not list children while walking to "${fullPath}" (${childrenResponse.status}): ${errorBody}`);
@@ -273,11 +286,16 @@ const ensureShareFileFolderExists = async (fullPath) => {
         continue;
       }
 
-      const createResponse = await fetch(`${apiBase}/Items(${currentId})/Folder`, {
-        method: 'POST',
-        headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ Name: segment }),
-      });
+      const createResponse = await sfFetch(
+        `${apiBase}/Items(${currentId})/Folder`,
+        {
+          method: 'POST',
+          headers: { ...authHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ Name: segment }),
+        },
+        `Create folder "${segment}" under "${fullPath}"`,
+        { onUnauthorized }
+      );
       if (!createResponse.ok) {
         const errorBody = await createResponse.text();
         throw new Error(`Could not create folder "${segment}" under "${fullPath}" (${createResponse.status}): ${errorBody}`);
