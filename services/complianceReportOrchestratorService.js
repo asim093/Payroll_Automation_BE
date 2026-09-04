@@ -9,6 +9,7 @@ const { fetchLogiFormsDataForClient } = require('./logiFormsService');
 const { calculateComplianceStatus, summarizeByWeek } = require('./complianceCalculationService');
 const { generateAdminReport, generateClientReport, saveReportToFile } = require('./complianceReportGeneratorService');
 const { createComplianceReportDraft } = require('./complianceEmailDraftService');
+const { upsertFromComplianceRun } = require('./applicantReminderService');
 const { getSettings } = require('./settingsService');
 const { applyMergeFields } = require('../utils/applyMergeFields');
 const { formatError } = require('../utils/formatError');
@@ -133,6 +134,17 @@ const generateComplianceReportForClient = async (clientId) => {
       emailStatus,
       success: true,
     });
+
+    try {
+      const reminderResult = await upsertFromComplianceRun(client._id, new Date(), calculatedRecords);
+      console.log(
+        `[COMPLIANCE-REPORT-ORCHESTRATOR] Applicant reminder queue for "${client.name}": ${JSON.stringify(reminderResult)}`
+      );
+    } catch (reminderError) {
+      console.error(
+        `[COMPLIANCE-REPORT-ORCHESTRATOR] Applicant reminder queue upsert failed for "${client.name}" (compliance report still succeeded): ${formatError(reminderError)}`
+      );
+    }
 
     return {
       success: true,
