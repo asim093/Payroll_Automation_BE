@@ -49,6 +49,23 @@ const settingsSchema = new mongoose.Schema(
         default: '',
       },
     },
+    applicantReminderEmailTemplate: {
+      subject: {
+        type: String,
+        trim: true,
+        default: '',
+      },
+      body: {
+        type: String,
+        trim: true,
+        default: '',
+      },
+    },
+    applicantReminderFromAddress: {
+      type: String,
+      trim: true,
+      default: '',
+    },
 
     mailSyncIntervalMinutes: {
       type: Number,

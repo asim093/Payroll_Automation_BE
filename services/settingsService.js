@@ -9,6 +9,8 @@ const DEFAULTS = {
   outlookClientSubfolder: '',
   logiFormsFolderPath: '',
   complianceReportEmailTemplate: { subject: '', body: '' },
+  applicantReminderEmailTemplate: { subject: '', body: '' },
+  applicantReminderFromAddress: '',
   mailSyncIntervalMinutes: 5,
   shareFileBridgeIntervalMinutes: 5,
 };
@@ -70,6 +72,15 @@ const updateSettings = async (updates) => {
       subject: updates.complianceReportEmailTemplate.subject ?? '',
       body: updates.complianceReportEmailTemplate.body ?? '',
     };
+  }
+  if (updates.applicantReminderEmailTemplate !== undefined) {
+    settings.applicantReminderEmailTemplate = {
+      subject: updates.applicantReminderEmailTemplate.subject ?? '',
+      body: updates.applicantReminderEmailTemplate.body ?? '',
+    };
+  }
+  if (updates.applicantReminderFromAddress !== undefined) {
+    settings.applicantReminderFromAddress = updates.applicantReminderFromAddress;
   }
   if (updates.mailSyncIntervalMinutes !== undefined) {
     settings.mailSyncIntervalMinutes = clampIntervalMinutes(
