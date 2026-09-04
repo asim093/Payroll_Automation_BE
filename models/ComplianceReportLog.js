@@ -1,5 +1,30 @@
 const mongoose = require('mongoose');
 
+const weeklyBreakdownEntrySchema = new mongoose.Schema(
+  {
+    weekEndingDate: {
+      type: Date,
+    },
+    total: {
+      type: Number,
+      required: true,
+    },
+    completed: {
+      type: Number,
+      required: true,
+    },
+    incomplete: {
+      type: Number,
+      required: true,
+    },
+    completedPercentage: {
+      type: Number,
+      required: true,
+    },
+  },
+  { _id: false }
+);
+
 const complianceReportLogSchema = new mongoose.Schema(
   {
     clientId: {
@@ -40,6 +65,10 @@ const complianceReportLogSchema = new mongoose.Schema(
     errorMessage: {
       type: String,
       trim: true,
+    },
+    weeklyBreakdown: {
+      type: [weeklyBreakdownEntrySchema],
+      default: undefined,
     },
   },
   { timestamps: true }
