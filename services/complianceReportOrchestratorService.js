@@ -122,6 +122,7 @@ const generateComplianceReportForClient = async (clientId) => {
       incompleteCount,
       emailStatus,
       success: true,
+      weeklyBreakdown: weeklyStats,
     });
     await ComplianceReportLog.create({
       clientId: client._id,
