@@ -764,6 +764,11 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     result.removedFolderPlaceholders += removed.deletedCount || 0;
 
     if (matchedClient) {
+      const freshMatchedClient = await Client.findById(matchedClient._id);
+      matchedClient = freshMatchedClient && freshMatchedClient.status === 'active' ? freshMatchedClient : null;
+    }
+
+    if (matchedClient) {
       result.matchedFolders += 1;
 
       const treeFileIds = treeFiles.map((entry) => entry.item.Id);
