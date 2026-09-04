@@ -28,15 +28,10 @@ const run = async () => {
     // TEST 1 - W/E Period calculation, specific dates
     // ============================================================
     console.log('=== TEST 1: week-ending (next-Sunday) calculation ===');
-    // UTC-anchored on purpose (Date.UTC, not the local-time Date(y,m,d)
-    // constructor) - matches how real payroll dates actually arrive via
-    // Phase 2's xlsx parsing (cellDates:true) and ISO date-strings, so
-    // this test reflects real usage instead of this machine's local
-    // timezone.
-    const monday = new Date(Date.UTC(2024, 0, 8)); // Mon Jan 8 2024
-    const sunday = new Date(Date.UTC(2024, 0, 14)); // Sun Jan 14 2024
-    const saturday = new Date(Date.UTC(2024, 0, 13)); // Sat Jan 13 2024
-    const tuesday = new Date(Date.UTC(2024, 0, 9)); // Tue Jan 9 2024
+    const monday = new Date(Date.UTC(2024, 0, 8));
+    const sunday = new Date(Date.UTC(2024, 0, 14));
+    const saturday = new Date(Date.UTC(2024, 0, 13));
+    const tuesday = new Date(Date.UTC(2024, 0, 9));
     const expectedWeekEnding = '2024-01-14';
 
     check('Monday -> following Sunday (Jan 8 -> Jan 14)', getWeekEndingSunday(monday)?.toISOString().slice(0, 10) === expectedWeekEnding);
