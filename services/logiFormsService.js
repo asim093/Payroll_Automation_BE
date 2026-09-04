@@ -22,7 +22,7 @@ const parseLogiFormsCsv = (localFilePath, fein) => {
     throw new Error(`LogiForms file not found: ${localFilePath}`);
   }
 
-  const workbook = XLSX.readFile(localFilePath, { cellDates: true, raw: true });
+  const workbook = XLSX.readFile(localFilePath);
   const firstSheetName = workbook.SheetNames[0];
   if (!firstSheetName) {
     throw new Error(`LogiForms file has no sheets: ${localFilePath}`);

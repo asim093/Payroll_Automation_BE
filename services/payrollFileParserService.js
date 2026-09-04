@@ -1,6 +1,7 @@
 const fs = require('fs');
 const XLSX = require('xlsx');
 const ColumnMapping = require('../models/ColumnMapping');
+const { normalizeToUtcCalendarDate } = require('../utils/dateOnly');
 
 const DESTINATION_FIELDS = ['StartDate', 'EmployeeName', 'SSN', 'Email'];
 
@@ -26,41 +27,7 @@ const normalizeSsn = (value) => {
   return String(value).replace(/-/g, '').trim();
 };
 
-const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30);
-
-const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})/;
-const US_SLASH_DATE_PATTERN = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/;
-
-const parseDateString = (rawString) => {
-  const trimmed = rawString.trim();
-  if (!trimmed) return null;
-
-  const isoMatch = trimmed.match(ISO_DATE_PATTERN);
-  if (isoMatch) {
-    const [, year, month, day] = isoMatch;
-    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  }
-
-  const usMatch = trimmed.match(US_SLASH_DATE_PATTERN);
-  if (usMatch) {
-    const [, month, day, year] = usMatch;
-    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  }
-
-  const fallbackParsed = new Date(trimmed);
-  if (Number.isNaN(fallbackParsed.getTime())) return null;
-  return new Date(Date.UTC(fallbackParsed.getFullYear(), fallbackParsed.getMonth(), fallbackParsed.getDate()));
-};
-
-const parseDateValue = (value) => {
-  if (value === null || value === undefined || value === '') return null;
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-  if (typeof value === 'number') {
-    const converted = new Date(EXCEL_EPOCH_MS + Math.round(value * 24 * 60 * 60 * 1000));
-    return Number.isNaN(converted.getTime()) ? null : converted;
-  }
-  return parseDateString(String(value));
-};
+const parseDateValue = normalizeToUtcCalendarDate;
 
 const isMappedRowEmpty = (mappedRow) =>
   Object.values(mappedRow).every(
@@ -72,7 +39,7 @@ const parsePayrollFile = async (filePath) => {
     throw new Error(`Payroll file not found: ${filePath}`);
   }
 
-  const workbook = XLSX.readFile(filePath, { cellDates: true });
+  const workbook = XLSX.readFile(filePath);
   const firstSheetName = workbook.SheetNames[0];
   if (!firstSheetName) {
     throw new Error(`Payroll file has no sheets: ${filePath}`);
