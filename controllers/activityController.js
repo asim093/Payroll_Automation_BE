@@ -4,11 +4,15 @@ const { getMessageBody, getEmailAttachments, isInlineImageAttachment } = require
 const { getAccessTokenFromRefreshToken } = require('../services/delegatedAuthService');
 const { withResilientMessageId } = require('../services/emailIdResolver');
 
+const MAX_INLINE_IMAGE_BASE64_LENGTH = 2 * 1024 * 1024;
+
 const embedInlineImages = (html, attachments) => {
-  if (!html || !Array.isArray(attachments) || attachments.length === 0) return html;
+  if (!html || !html.includes('cid:') || !Array.isArray(attachments) || attachments.length === 0) return html;
   let output = html;
   attachments.forEach((attachment) => {
     if (!attachment || !attachment.contentBytes) return;
+    if (!isInlineImageAttachment(attachment)) return;
+    if (attachment.contentBytes.length > MAX_INLINE_IMAGE_BASE64_LENGTH) return;
     const dataUri = `data:${attachment.contentType || 'application/octet-stream'};base64,${attachment.contentBytes}`;
     const tokens = [String(attachment.contentId || '').replace(/^<|>$/g, ''), attachment.name].filter(Boolean);
     tokens.forEach((token) => {

@@ -5,6 +5,7 @@ const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const OAuthCredential = require('../models/OAuthCredential');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
+const { isShareFilePathIgnored, shareFileFolderAssignClientId } = require('./ignoreRuleService');
 const { resolveFolderPath } = require('../utils/folderPath');
 const {
   PROVIDER_KEY: SHAREFILE_OAUTH_PROVIDER_KEY,
@@ -469,6 +470,10 @@ const scanShareFileForNewFiles = async () => {
 };
 
 const recordUnmatchedFile = async (fileItem, path) => {
+  if (await isShareFilePathIgnored(path)) {
+    return false;
+  }
+
   const sourceCreatedAt = shareFileItemCreatedAt(fileItem);
 
   const existing = await UnmatchedShareFileItem.findOne({ itemId: fileItem.Id });
@@ -694,7 +699,13 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
 
     result.foldersScanned += 1;
     const folderPath = shareFileRootPath ? `${shareFileRootPath}/${name}` : name;
-    const matchedClient = folderMap.get(name.trim().toLowerCase());
+    let matchedClient = folderMap.get(name.trim().toLowerCase());
+    if (!matchedClient) {
+      const assignClientId = await shareFileFolderAssignClientId(folderPath);
+      if (assignClientId) {
+        matchedClient = await Client.findById(assignClientId);
+      }
+    }
 
     const treeProgeny = parseShareFileDate(child.ProgenyEditDate);
     if (treeProgeny && treeProgeny < since && !matchedClient) {

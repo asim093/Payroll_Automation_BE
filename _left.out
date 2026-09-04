@@ -1,0 +1,2 @@
+◇ injected env (16) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }
+MongoDB connection error: querySrv ESERVFAIL _mongodb._tcp.cluster0.wlfxsfx.mongodb.net

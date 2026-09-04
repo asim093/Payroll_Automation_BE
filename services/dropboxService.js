@@ -6,6 +6,7 @@ const { getSettings } = require('./settingsService');
 const { resolveFolderPath } = require('../utils/folderPath');
 const Client = require('../models/Client');
 const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
+const { isDropboxPathIgnored, dropboxFolderAssignClientId } = require('./ignoreRuleService');
 const OAuthCredential = require('../models/OAuthCredential');
 const {
   PROVIDER_KEY: DROPBOX_OAUTH_PROVIDER_KEY,
@@ -217,7 +218,13 @@ const scanDropboxRootForUnmatchedItems = async () => {
   for (const entry of children) {
     const isFolder = entry['.tag'] === 'folder';
     const name = entry.name;
-    const matchedClient = isFolder ? folderNameToClient.get(name.trim().toLowerCase()) : undefined;
+    let matchedClient = isFolder ? folderNameToClient.get(name.trim().toLowerCase()) : undefined;
+    if (!matchedClient) {
+      const assignClientId = await dropboxFolderAssignClientId(entry.path_display);
+      if (assignClientId) {
+        matchedClient = await Client.findById(assignClientId);
+      }
+    }
 
     if (matchedClient) {
       const result = await UnmatchedDropboxItem.updateOne(
@@ -246,6 +253,10 @@ const scanDropboxRootForUnmatchedItems = async () => {
         existing.isEmpty = isEmpty;
         await existing.save();
       }
+      continue;
+    }
+
+    if (await isDropboxPathIgnored(entry.path_display)) {
       continue;
     }
 

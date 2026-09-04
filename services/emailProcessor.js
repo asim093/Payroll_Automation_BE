@@ -12,6 +12,7 @@ const { uploadFileToDropbox } = require('./dropboxService');
 const { fetchFileFromShareFile } = require('./sharefileService');
 const { assignCategory, ensureCategoryExists, copyEmailToFolder } = require('./graphService');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
+const { isSenderIgnored } = require('./ignoreRuleService');
 
 const PROCESSED_CATEGORY_NAME = 'Processed';
 const PROCESSED_CATEGORY_COLOR = 'preset1'; 
@@ -320,6 +321,25 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     return emailLog;
   }
 
+
+  if (await isSenderIgnored(sender)) {
+    const emailLog = await EmailLog.create({
+      messageId,
+      internetMessageId,
+      sender,
+      subject,
+      receivedAt: receivedDateTime,
+      matchedClientId: null,
+      status: 'ignored',
+      categoryAssigned: false,
+      attachments: [],
+      authMode,
+    });
+    console.log(
+      `[IGNORED] ${messageId} — sender "${sender}" matches an ignore rule. EmailLog created (status: ignored), not added to Review Queue.`
+    );
+    return emailLog;
+  }
 
   const hasAttachments = attachments.length > 0;
   const mentionsAttachment = ATTACHMENT_MENTION_PATTERN.test(`${subject || ''} ${bodyPreview || ''}`);

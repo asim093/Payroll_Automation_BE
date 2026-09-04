@@ -42,7 +42,7 @@ const emailLogSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['processed', 'needs_review', 'failed', 'no_attachment_skipped'],
+      enum: ['processed', 'needs_review', 'failed', 'no_attachment_skipped', 'ignored'],
       default: 'needs_review',
     },
     categoryAssigned: {
