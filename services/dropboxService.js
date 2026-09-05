@@ -161,6 +161,53 @@ const ensureDropboxFolderExists = async (clientFolderSegment, isAbsolute = false
   }
 };
 
+const folderRenameTarget = (fromResolved, toResolved) => {
+  const fromSegs = fromResolved.split('/').filter(Boolean);
+  const toSegs = toResolved.split('/').filter(Boolean);
+  if (fromSegs.length !== toSegs.length) return { reason: 'shape-changed' };
+  const diffIdx = fromSegs.findIndex((seg, i) => seg.toLowerCase() !== toSegs[i].toLowerCase());
+  if (diffIdx === -1) return { reason: 'unchanged' };
+  const tailFrom = fromSegs.slice(diffIdx + 1).join('/').toLowerCase();
+  const tailTo = toSegs.slice(diffIdx + 1).join('/').toLowerCase();
+  if (tailFrom !== tailTo) return { reason: 'multi-segment-change' };
+  return {
+    reason: 'ok',
+    from: `/${fromSegs.slice(0, diffIdx + 1).join('/')}`,
+    to: `/${toSegs.slice(0, diffIdx + 1).join('/')}`,
+  };
+};
+
+const renameDropboxFolder = async (fromSegment, fromIsAbsolute, toSegment, toIsAbsolute) => {
+  const fromResolved = await resolveDropboxFolderPath(fromSegment, fromIsAbsolute);
+  const toResolved = await resolveDropboxFolderPath(toSegment, toIsAbsolute);
+
+  const target = folderRenameTarget(fromResolved, toResolved);
+  if (target.reason !== 'ok') return { renamed: false, reason: target.reason };
+
+  const accessToken = await getDropboxAccessToken();
+  const dbx = createDropboxClient(accessToken);
+
+  try {
+    await dbx.filesGetMetadata({ path: target.from });
+  } catch (error) {
+    if ((error?.error?.error_summary || '').startsWith('path/not_found')) {
+      return { renamed: false, reason: 'source-missing' };
+    }
+    throw error;
+  }
+
+  try {
+    await dbx.filesGetMetadata({ path: target.to });
+    return { renamed: false, reason: 'target-exists' };
+  } catch (error) {
+    if (!(error?.error?.error_summary || '').startsWith('path/not_found')) throw error;
+  }
+
+  const response = await dbx.filesMoveV2({ from_path: target.from, to_path: target.to });
+  console.log(`  [DROPBOX] Renamed folder "${target.from}" -> "${response.result.metadata.path_display}".`);
+  return { renamed: true, from: target.from, to: response.result.metadata.path_display };
+};
+
 const deleteDropboxFolder = async (clientFolderSegment, isAbsolute = false) => {
   const accessToken = await getDropboxAccessToken();
   const dbx = createDropboxClient(accessToken);
@@ -422,6 +469,7 @@ const uploadReportFile = async (clientFolderSegment, fileName, contentBuffer, is
 module.exports = {
   uploadFileToDropbox,
   ensureDropboxFolderExists,
+  renameDropboxFolder,
   deleteDropboxFolder,
   scanDropboxRootForUnmatchedItems,
   deleteDropboxItemByPath,

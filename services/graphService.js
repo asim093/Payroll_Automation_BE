@@ -441,6 +441,28 @@ const deleteMailFolder = async (folderId, accessToken, mailboxEmail) => {
   }
 };
 
+const renameMailFolder = async (folderId, newDisplayName, accessToken, mailboxEmail) => {
+  try {
+    const token = await resolveAccessToken(accessToken);
+    const segment = mailboxSegment(mailboxEmail);
+    const url = `${GRAPH_BASE_URL}/${segment}/mailFolders/${folderId}`;
+
+    const response = await fetchWithRetry(url, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: newDisplayName }),
+    });
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`rename mail folder failed (${response.status}): ${errorBody}`);
+    }
+    console.log(`  [OUTLOOK] Renamed mail folder (id ${folderId}) to "${newDisplayName}".`);
+  } catch (error) {
+    console.error(`renameMailFolder ERROR: ${error.message}`);
+    throw error;
+  }
+};
+
 module.exports = {
   getAccessToken,
   getRecentEmails,
@@ -452,6 +474,7 @@ module.exports = {
   ensureCategoryExists,
   findOrCreateOutlookFolder,
   deleteMailFolder,
+  renameMailFolder,
   copyEmailToFolder,
   moveEmailToFolder,
 };

@@ -3,7 +3,7 @@ const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
-const { setupClientFolders } = require('../services/clientFolderSetupService');
+const { setupClientFolders, renameClientFolders } = require('../services/clientFolderSetupService');
 const { deleteClientFolders } = require('../services/clientFolderCleanupService');
 const { syncLegacyRulesForClient, deleteAllRulesForClient } = require('../services/matchingRuleSyncService');
 const { listPayrollFiles, listAllFilesInFolder } = require('../services/dropboxService');
@@ -289,7 +289,9 @@ exports.updateClient = async (req, res, next) => {
       (req.body.name !== undefined && req.body.name.trim() !== beforeUpdate.name);
 
     if (pathAffectingFieldsChanged) {
-      client.folderSetupWarnings = await setupClientFolders(client);
+      const renameWarnings = await renameClientFolders(beforeUpdate, client);
+      const setupWarnings = await setupClientFolders(client);
+      client.folderSetupWarnings = [...renameWarnings, ...setupWarnings];
       await client.save();
     }
 

@@ -877,6 +877,54 @@ const resolveShareFileFolderId = async (fullPath) => {
   return currentId;
 };
 
+const renameShareFileFolder = async (fromFullPath, toFullPath) => {
+  const fromSegs = fromFullPath.split('/').map((part) => part.trim()).filter(Boolean);
+  const toSegs = toFullPath.split('/').map((part) => part.trim()).filter(Boolean);
+
+  if (fromSegs.length !== toSegs.length) return { renamed: false, reason: 'shape-changed' };
+  const diffIdx = fromSegs.findIndex((seg, i) => seg.toLowerCase() !== toSegs[i].toLowerCase());
+  if (diffIdx === -1) return { renamed: false, reason: 'unchanged' };
+  if (
+    fromSegs.slice(diffIdx + 1).join('/').toLowerCase() !== toSegs.slice(diffIdx + 1).join('/').toLowerCase()
+  ) {
+    return { renamed: false, reason: 'multi-segment-change' };
+  }
+
+  const fromFolderPath = fromSegs.slice(0, diffIdx + 1).join('/');
+  const toFolderPath = toSegs.slice(0, diffIdx + 1).join('/');
+  const newName = toSegs[diffIdx];
+
+  let context = await getShareFileContext();
+  const onUnauthorized = async () => {
+    context = await getShareFileContext({ forceRefresh: true });
+    return context.authHeaders;
+  };
+
+  const folderId = await resolveShareFileFolderId(fromFolderPath);
+  if (!folderId) return { renamed: false, reason: 'source-missing' };
+
+  const existingTargetId = await resolveShareFileFolderId(toFolderPath);
+  if (existingTargetId && existingTargetId !== folderId) return { renamed: false, reason: 'target-exists' };
+
+  const response = await sfFetch(
+    `${context.apiBase}/Items(${folderId})`,
+    {
+      method: 'PATCH',
+      headers: { ...context.authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Name: newName }),
+    },
+    `Rename ShareFile folder "${fromFolderPath}" -> "${newName}"`,
+    { onUnauthorized }
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Could not rename ShareFile folder "${fromFolderPath}" (${response.status}): ${body}`);
+  }
+
+  console.log(`  [SHAREFILE] Renamed folder "${fromFolderPath}" -> "${toFolderPath}".`);
+  return { renamed: true, from: fromFolderPath, to: toFolderPath };
+};
+
 const deleteShareFileFolder = async (fullPath) => {
   try {
     const { apiBase, authHeaders } = await getShareFileContext();
@@ -925,6 +973,7 @@ module.exports = {
   scanShareFileForNewFiles,
   scanShareFileClientsTree,
   ensureShareFileFolderExists,
+  renameShareFileFolder,
   deleteShareFileFolder,
   deleteShareFileItemById,
   scanShareFileRootForUnmatchedItems,

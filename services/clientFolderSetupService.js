@@ -2,9 +2,9 @@
 const Client = require('../models/Client');
 const { getSettings } = require('./settingsService');
 const { joinFolderPath, resolveFolderPath } = require('../utils/folderPath');
-const { ensureDropboxFolderExists } = require('./dropboxService');
-const { ensureShareFileFolderExists } = require('./sharefileService');
-const { findOrCreateOutlookFolder } = require('./graphService');
+const { ensureDropboxFolderExists, renameDropboxFolder } = require('./dropboxService');
+const { ensureShareFileFolderExists, renameShareFileFolder } = require('./sharefileService');
+const { findOrCreateOutlookFolder, renameMailFolder } = require('./graphService');
 const { getAccessTokenFromRefreshToken, isDelegatedConfigAvailable } = require('./delegatedAuthService');
 const { formatError } = require('../utils/formatError');
 
@@ -36,6 +36,86 @@ const checkForPathCollisions = async (client) => {
     warnings.push(
       `ShareFile: this path is already used by client "${shareFileCollision.name}" — files from both clients will land in the same folder.`
     );
+  }
+
+  return warnings;
+};
+
+
+const renameClientFolders = async (previousClient, client) => {
+  const warnings = [];
+  const { shareFileRootPath } = await getSettings();
+
+  try {
+    const result = await renameDropboxFolder(
+      previousClient.dropboxPath || previousClient.name,
+      previousClient.dropboxPathIsAbsolute,
+      client.dropboxPath || client.name,
+      client.dropboxPathIsAbsolute
+    );
+    if (result.renamed) {
+      console.log(`  [CLIENT RENAME] Dropbox folder "${result.from}" -> "${result.to}".`);
+    } else if (result.reason === 'target-exists') {
+      warnings.push(
+        'Dropbox: a folder already exists at the new path — the old folder was left in place, move its files over manually.'
+      );
+    } else if (result.reason === 'multi-segment-change' || result.reason === 'shape-changed') {
+      warnings.push(
+        'Dropbox: the folder path changed too much to rename automatically — the old folder was left in place, move its files over manually.'
+      );
+    }
+  } catch (error) {
+    warnings.push(
+      `Dropbox: could not rename the folder automatically (${formatError(error)}). The old folder may need renaming manually.`
+    );
+  }
+
+  try {
+    const fromPath = resolveFolderPath(
+      shareFileRootPath,
+      previousClient.shareFilePath || previousClient.name,
+      previousClient.shareFilePathIsAbsolute
+    );
+    const toPath = resolveFolderPath(
+      shareFileRootPath,
+      client.shareFilePath || client.name,
+      client.shareFilePathIsAbsolute
+    );
+    const result = await renameShareFileFolder(fromPath, toPath);
+    if (result.renamed) {
+      console.log(`  [CLIENT RENAME] ShareFile folder "${result.from}" -> "${result.to}".`);
+    } else if (result.reason === 'target-exists') {
+      warnings.push(
+        'ShareFile: a folder already exists at the new path — the old folder was left in place, move its files over manually.'
+      );
+    } else if (result.reason === 'multi-segment-change' || result.reason === 'shape-changed') {
+      warnings.push(
+        'ShareFile: the folder path changed too much to rename automatically — the old folder was left in place, move its files over manually.'
+      );
+    }
+  } catch (error) {
+    warnings.push(
+      `ShareFile: could not rename the folder automatically (${formatError(error)}). The old folder may need renaming manually.`
+    );
+  }
+
+  if (previousClient.outlookFolderId && previousClient.name !== client.name && (await isDelegatedConfigAvailable())) {
+    try {
+      const { outlookClientSubfolder } = await getSettings();
+      if (outlookClientSubfolder) {
+        warnings.push(
+          'Outlook: the mail folder was not renamed automatically because a subfolder is configured — rename it in Outlook manually.'
+        );
+      } else {
+        const accessToken = await getAccessTokenFromRefreshToken();
+        await renameMailFolder(previousClient.outlookFolderId, client.name, accessToken, undefined);
+        client.outlookFolderId = previousClient.outlookFolderId;
+      }
+    } catch (error) {
+      warnings.push(
+        `Outlook: could not rename the mail folder automatically (${formatError(error)}).`
+      );
+    }
   }
 
   return warnings;
@@ -92,4 +172,4 @@ const setupClientFolders = async (client) => {
   return warnings;
 };
 
-module.exports = { setupClientFolders };
+module.exports = { setupClientFolders, renameClientFolders };
