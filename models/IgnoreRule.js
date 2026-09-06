@@ -4,7 +4,7 @@ const ignoreRuleSchema = new mongoose.Schema(
   {
     scope: {
       type: String,
-      enum: ['email', 'sharefile', 'dropbox'],
+      enum: ['email', 'sharefile'],
       required: true,
       index: true,
     },

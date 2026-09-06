@@ -4,7 +4,7 @@ const connectDB = require('./config/db');
 const Client = require('./models/Client');
 const FileLog = require('./models/FileLog');
 const { scanShareFileClientsTree } = require('./services/sharefileService');
-const { uploadFileToDropbox, scanDropboxRootForUnmatchedItems } = require('./services/dropboxService');
+const { uploadFileToDropbox } = require('./services/dropboxService');
 const { recordScanErrors } = require('./services/scanErrorLogService');
 const { formatError } = require('./utils/formatError');
 const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
@@ -103,17 +103,6 @@ const processShareFileScan = async ({ since } = {}) => {
   }
 
 
-  await startItem(PROCESS_KEY, 'Scanning Dropbox for orphaned folders/files...');
-  let dropboxOrphanScan = { scanned: 0, newOrphans: 0, autoResolved: 0 };
-  try {
-    dropboxOrphanScan = await scanDropboxRootForUnmatchedItems();
-  } catch (error) {
-    const message = `Dropbox orphan scan failed: ${formatError(error)}`;
-    console.error(`[DROPBOX ORPHAN SCAN] ERROR: ${message}`);
-    errors.push({ scope: 'dropbox-orphan-scan', message });
-  }
-  await completeItem(PROCESS_KEY);
-
   if (errors.length > 0) {
     await recordScanErrors(PROCESS_KEY, errors);
   }
@@ -149,9 +138,6 @@ const processShareFileScan = async ({ since } = {}) => {
     unmatchedItemsScanned: tree.foldersScanned,
     newUnmatchedItems: tree.unmatchedFilesRecorded,
     autoResolvedUnmatchedItems: tree.autoResolvedFiles,
-    dropboxUnmatchedItemsScanned: dropboxOrphanScan.scanned,
-    dropboxNewUnmatchedItems: dropboxOrphanScan.newOrphans,
-    dropboxAutoResolvedUnmatchedItems: dropboxOrphanScan.autoResolved || 0,
   };
 };
 

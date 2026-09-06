@@ -2,7 +2,6 @@ const IgnoreRule = require('../models/IgnoreRule');
 const EmailLog = require('../models/EmailLog');
 const ReviewQueue = require('../models/ReviewQueue');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
-const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
 
 const CACHE_TTL_MS = 30 * 1000;
 const cache = { rules: [], loadedAt: 0 };
@@ -62,17 +61,6 @@ const isShareFilePathIgnored = async (fullPath) => {
   );
 };
 
-const isDropboxPathIgnored = async (fullPath) => {
-  const rules = await loadActiveRules();
-  return rules.some(
-    (rule) =>
-      rule.scope === 'dropbox' &&
-      rule.action === 'ignore' &&
-      rule.type === 'folder_path' &&
-      pathMatchesRule(fullPath, rule.value)
-  );
-};
-
 const folderAssignRuleClientId = async (scope, fullPath) => {
   const rules = await loadActiveRules();
   const match = rules.find(
@@ -87,7 +75,6 @@ const folderAssignRuleClientId = async (scope, fullPath) => {
 };
 
 const shareFileFolderAssignClientId = (fullPath) => folderAssignRuleClientId('sharefile', fullPath);
-const dropboxFolderAssignClientId = (fullPath) => folderAssignRuleClientId('dropbox', fullPath);
 
 const sweepEmail = async (rule) => {
   const value = normalizeEmail(rule.value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -167,13 +154,10 @@ const createIgnoreRule = async ({ scope, type, value, action = 'ignore', clientI
   let affected = 0;
   if (action === 'assign') {
     if (scope === 'sharefile') affected = await sweepFolderAssign(UnmatchedShareFileItem, rule);
-    else if (scope === 'dropbox') affected = await sweepFolderAssign(UnmatchedDropboxItem, rule);
   } else if (scope === 'email') {
     affected = await sweepEmail(rule);
   } else if (scope === 'sharefile') {
     affected = await sweepFolderDismiss(UnmatchedShareFileItem, rule);
-  } else if (scope === 'dropbox') {
-    affected = await sweepFolderDismiss(UnmatchedDropboxItem, rule);
   }
 
   return { rule, affected, dismissed: affected };
@@ -194,9 +178,7 @@ module.exports = {
   invalidateCache,
   isSenderIgnored,
   isShareFilePathIgnored,
-  isDropboxPathIgnored,
   shareFileFolderAssignClientId,
-  dropboxFolderAssignClientId,
   createIgnoreRule,
   listIgnoreRules,
   deleteIgnoreRule,

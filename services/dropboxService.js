@@ -3,14 +3,7 @@ const { Dropbox } = require('dropbox');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
-const {
-  resolveFolderPath,
-  sanitizeForPath,
-  resolveDropboxFolderPathSync,
-} = require('../utils/folderPath');
-const Client = require('../models/Client');
-const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
-const { isDropboxPathIgnored, dropboxFolderAssignClientId } = require('./ignoreRuleService');
+const { sanitizeForPath, resolveDropboxFolderPathSync } = require('../utils/folderPath');
 const OAuthCredential = require('../models/OAuthCredential');
 const {
   PROVIDER_KEY: DROPBOX_OAUTH_PROVIDER_KEY,
@@ -95,8 +88,6 @@ const getDropboxAccessToken = async ({ forceRefresh = false } = {}) => {
     throw error;
   }
 };
-
-const getEffectiveDropboxRootPath = (storedRootPath) => (getDropboxPathRoot() ? '' : storedRootPath);
 
 const resolveDropboxFolderPath = async (clientFolderSegment, isAbsolute = false) => {
   const { dropboxRootPath } = await getSettings();
@@ -225,132 +216,6 @@ const deleteDropboxFolder = async (clientFolderSegment, isAbsolute = false) => {
   }
 };
 
-const scanDropboxRootForUnmatchedItems = async () => {
-  const { dropboxRootPath } = await getSettings();
-  const effectiveRootPath = getEffectiveDropboxRootPath(dropboxRootPath);
-  const accessToken = await getDropboxAccessToken();
-  const dbx = createDropboxClient(accessToken);
-
-  const rootPath = effectiveRootPath ? `/${effectiveRootPath.replace(/^\/+/, '')}` : '';
-
-  let children;
-  try {
-    const response = await dbx.filesListFolder({ path: rootPath });
-    children = response.result.entries;
-  } catch (error) {
-    const errorSummary = error?.error?.error_summary || '';
-    if (errorSummary.startsWith('path/not_found')) {
-      console.log(`  [DROPBOX ORPHAN SCAN] Root path "${effectiveRootPath}" not found - skipping.`);
-      return { scanned: 0, newOrphans: 0, autoResolved: 0 };
-    }
-    console.error(`scanDropboxRootForUnmatchedItems ERROR (listing root): ${formatError(error)}`);
-    throw error;
-  }
-
-  const clients = await Client.find();
-  const folderNameToClient = new Map();
-  clients.forEach((client) => {
-    if (client.dropboxPathIsAbsolute) return;
-    const topSegment = (client.dropboxPath || client.name).split('/')[0].trim().toLowerCase();
-    if (!folderNameToClient.has(topSegment)) {
-      folderNameToClient.set(topSegment, client);
-    }
-  });
-
-  let newOrphans = 0;
-  let autoResolved = 0;
-
-  for (const entry of children) {
-    const isFolder = entry['.tag'] === 'folder';
-    const name = entry.name;
-    let matchedClient = isFolder ? folderNameToClient.get(name.trim().toLowerCase()) : undefined;
-    if (!matchedClient) {
-      const assignClientId = await dropboxFolderAssignClientId(entry.path_display);
-      if (assignClientId) {
-        matchedClient = await Client.findById(assignClientId);
-      }
-    }
-
-    if (matchedClient) {
-      const result = await UnmatchedDropboxItem.updateOne(
-        { itemId: entry.id, status: 'unresolved' },
-        { status: 'resolved', resolvedClientId: matchedClient._id, resolvedAt: new Date() }
-      );
-      autoResolved += result.modifiedCount || 0;
-      continue;
-    }
-
-    let isEmpty = false;
-    if (isFolder) {
-      const childResponse = await dbx.filesListFolder({ path: entry.path_lower });
-      isEmpty = childResponse.result.entries.length === 0;
-    }
-
-    if (isFolder && isEmpty) {
-      await UnmatchedDropboxItem.deleteOne({ itemId: entry.id, status: 'unresolved' });
-      continue;
-    }
-
-    const existing = await UnmatchedDropboxItem.findOne({ itemId: entry.id });
-    if (existing) {
-      if (existing.status === 'unresolved') {
-        existing.lastSeenAt = new Date();
-        existing.isEmpty = isEmpty;
-        await existing.save();
-      }
-      continue;
-    }
-
-    if (await isDropboxPathIgnored(entry.path_display)) {
-      continue;
-    }
-
-    await UnmatchedDropboxItem.create({
-      itemId: entry.id,
-      itemType: isFolder ? 'folder' : 'file',
-      name,
-      path: entry.path_display,
-      isEmpty,
-      discoveredAt: new Date(),
-      lastSeenAt: new Date(),
-      status: 'unresolved',
-    });
-    console.log(
-      `  [DROPBOX ORPHAN SCAN] New unmatched ${isFolder ? 'folder' : 'file'}: "${entry.path_display}"${isEmpty ? ' (empty)' : ''}`
-    );
-    newOrphans++;
-  }
-
-  return { scanned: children.length, newOrphans, autoResolved };
-};
-
-const deleteDropboxItemByPath = async (path) => {
-  const accessToken = await getDropboxAccessToken();
-  const dbx = createDropboxClient(accessToken);
-  try {
-    await dbx.filesDeleteV2({ path });
-    console.log(`  [DROPBOX] Deleted item "${path}".`);
-    return { deleted: true };
-  } catch (error) {
-    const errorSummary = error?.error?.error_summary || '';
-    if (errorSummary.startsWith('path_lookup/not_found')) {
-      return { deleted: false };
-    }
-    console.error(`deleteDropboxItemByPath ERROR ("${path}"): ${formatError(error)}`);
-    throw error;
-  }
-};
-
-const moveDropboxItemToClientFolder = async (fromPath, clientFolderSegment, fileName, isAbsolute = false) => {
-  const accessToken = await getDropboxAccessToken();
-  const dbx = createDropboxClient(accessToken);
-  const destinationFolder = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
-  const toPath = `${destinationFolder}/${sanitizeForPath(fileName)}`;
-
-  const response = await dbx.filesMoveV2({ from_path: fromPath, to_path: toPath, autorename: true });
-  console.log(`  [DROPBOX] Moved "${fromPath}" -> "${response.result.metadata.path_display}".`);
-  return response.result.metadata.path_display;
-};
 
 const PAYROLL_FILE_EXTENSIONS = ['.xlsx', '.xls', '.csv'];
 
@@ -478,9 +343,6 @@ module.exports = {
   ensureDropboxFolderExists,
   renameDropboxFolder,
   deleteDropboxFolder,
-  scanDropboxRootForUnmatchedItems,
-  deleteDropboxItemByPath,
-  moveDropboxItemToClientFolder,
   getDropboxAccessToken,
   findLatestPayrollFile,
   listPayrollFiles,
