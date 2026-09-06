@@ -21,7 +21,7 @@ const isDue = (client, now) => {
 };
 
 const retryOne = async (client) => {
-  const warnings = await setupClientFolders(client);
+  const { warnings } = await setupClientFolders(client);
   const attempts = (client.folderSetupRetry?.attempts || 0) + 1;
   const stillFailing = hasRetryableWarning(warnings);
 

@@ -19,7 +19,8 @@ const run = async () => {
       console.log(`\n--- ${client.name} (${client._id}) ---`);
       console.log('Before:', JSON.stringify(client.folderSetupWarnings));
 
-      client.folderSetupWarnings = await setupClientFolders(client);
+      const { warnings } = await setupClientFolders(client);
+      client.folderSetupWarnings = warnings;
       await client.save();
 
       if (client.folderSetupWarnings.length === 0) {

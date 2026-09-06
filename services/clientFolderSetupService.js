@@ -131,6 +131,7 @@ const renameClientFolders = async (previousClient, client) => {
 
 const setupClientFolders = async (client) => {
   const warnings = await checkForPathCollisions(client);
+  const notices = [];
   const { dropboxRootPath, shareFileRootPath, outlookRootPath, outlookClientSubfolder } = await getSettings();
 
   try {
@@ -141,11 +142,11 @@ const setupClientFolders = async (client) => {
     );
     if (!result.created) {
       const count = await dropboxFolderContentCount(dropboxSegment, client.dropboxPathIsAbsolute).catch(() => 0);
-      if (count > 0) {
-        warnings.push(
-          `Using the existing Dropbox folder "${result.path}", which already contains ${count} item${count === 1 ? '' : 's'}. New files for this client will be added there.`
-        );
-      }
+      notices.push(
+        count > 0
+          ? `A Dropbox folder already exists at "${result.path}" with ${count} item${count === 1 ? '' : 's'} in it. This client's files will go there.`
+          : `A Dropbox folder already exists at "${result.path}". This client's files will go there.`
+      );
     }
   } catch (error) {
     const message = formatError(error);
@@ -162,11 +163,11 @@ const setupClientFolders = async (client) => {
     );
     if (!result.created && result.folderId) {
       const count = await shareFileFolderChildCount(result.folderId);
-      if (count > 0) {
-        warnings.push(
-          `Using the existing ShareFile folder "${resolvedPath}", which already contains ${count} item${count === 1 ? '' : 's'}. New files for this client will be added there.`
-        );
-      }
+      notices.push(
+        count > 0
+          ? `A ShareFile folder already exists at "${resolvedPath}" with ${count} item${count === 1 ? '' : 's'} in it. This client's files will go there.`
+          : `A ShareFile folder already exists at "${resolvedPath}". This client's files will go there.`
+      );
     }
   } catch (error) {
     const message = formatError(error);
@@ -192,7 +193,7 @@ const setupClientFolders = async (client) => {
     console.log('  [CLIENT SETUP] Outlook: delegated flow not configured - skipping mail-folder creation.');
   }
 
-  return warnings;
+  return { warnings, notices };
 };
 
 module.exports = { setupClientFolders, renameClientFolders };

@@ -42,7 +42,7 @@ const ok = (label, cond, extra) => {
 (async () => {
   // 1. a transient failure that then succeeds -> warning cleared, retry state reset
   clients = [mkClient({ name: 'Recovers', folderSetupWarnings: [RETRYABLE] })];
-  setupImpl = async () => [];
+  setupImpl = async () => ({ warnings: [], notices: [] });
   let res = await retryPendingFolderSetups();
   ok('resolved client count is 1', res.resolved === 1, res);
   ok('warning cleared after a successful retry', clients[0].folderSetupWarnings.length === 0);
@@ -56,7 +56,7 @@ const ok = (label, cond, extra) => {
 
   // 3. persistent failure -> attempts climb, then exhausted, then skipped
   clients = [mkClient({ name: 'Broken', folderSetupWarnings: [RETRYABLE] })];
-  setupImpl = async () => [RETRYABLE];
+  setupImpl = async () => ({ warnings: [RETRYABLE], notices: [] });
   for (let i = 0; i < MAX_ATTEMPTS + 2; i += 1) {
     clients[0].folderSetupRetry.lastAttemptAt = null; // bypass backoff for the test
     await retryPendingFolderSetups();

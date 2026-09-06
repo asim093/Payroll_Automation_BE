@@ -157,11 +157,12 @@ exports.createClient = async (req, res, next) => {
 
     const client = await Client.create(clientData);
 
-    client.folderSetupWarnings = await setupClientFolders(client);
+    const { warnings, notices } = await setupClientFolders(client);
+    client.folderSetupWarnings = warnings;
     await client.save();
     await syncLegacyRulesForClient(client);
 
-    res.status(201).json(client);
+    res.status(201).json({ ...client.toObject(), folderNotices: notices });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(409).json({ error: 'A client with this name already exists' });
@@ -387,11 +388,13 @@ exports.updateClient = async (req, res, next) => {
         Boolean(clientData.shareFilePathIsAbsolute) !== Boolean(beforeUpdate.shareFilePathIsAbsolute)) ||
       (clientData.name !== undefined && clientData.name.trim() !== beforeUpdate.name);
 
+    let folderNotices = [];
     if (pathAffectingFieldsChanged) {
       const renameWarnings = await renameClientFolders(beforeUpdate, client);
-      const setupWarnings = await setupClientFolders(client);
+      const { warnings: setupWarnings, notices } = await setupClientFolders(client);
       client.folderSetupWarnings = [...renameWarnings, ...setupWarnings];
       client.folderSetupRetry = { attempts: 0, lastAttemptAt: null, exhausted: false };
+      folderNotices = notices;
       await client.save();
     }
 
@@ -399,7 +402,7 @@ exports.updateClient = async (req, res, next) => {
       await syncLegacyRulesForClient(client);
     }
 
-    res.status(200).json(client);
+    res.status(200).json({ ...client.toObject(), folderNotices });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(409).json({ error: 'A client with this name already exists' });
@@ -416,11 +419,12 @@ exports.retryFolderSetup = async (req, res, next) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    client.folderSetupWarnings = await setupClientFolders(client);
+    const { warnings, notices } = await setupClientFolders(client);
+    client.folderSetupWarnings = warnings;
     client.folderSetupRetry = { attempts: 0, lastAttemptAt: null, exhausted: false };
     await client.save();
 
-    res.status(200).json(client);
+    res.status(200).json({ ...client.toObject(), folderNotices: notices });
   } catch (error) {
     next(error);
   }
