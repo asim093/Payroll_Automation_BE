@@ -408,6 +408,15 @@ const listAllFilesInFolder = async (clientFolderSegment, isAbsolute = false) => 
     .map(toFileSummary);
 };
 
+// Total number of items (files + subfolders) directly in a folder, used to tell
+// the operator when a newly created client is being pointed at a folder that
+// already has contents.
+const dropboxFolderContentCount = async (clientFolderSegment, isAbsolute = false) => {
+  const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
+  const entries = await listFolderEntries(folderPath, 'dropboxFolderContentCount');
+  return entries.length;
+};
+
 const findLatestFileInFolder = async (clientFolderSegment, isAbsolute, extensions, callerLabel) => {
   const files = await listFilesInFolder(clientFolderSegment, isAbsolute, extensions, callerLabel);
   return files.length === 0 ? null : files[0];
@@ -476,6 +485,7 @@ module.exports = {
   findLatestPayrollFile,
   listPayrollFiles,
   listAllFilesInFolder,
+  dropboxFolderContentCount,
   downloadDropboxFileToLocal,
   downloadDropboxFileBuffer,
   uploadReportFile,

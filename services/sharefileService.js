@@ -1010,6 +1010,25 @@ const deleteShareFileItemById = async (itemId) => {
   return { deleted: true };
 };
 
+// Number of items directly under a folder (by folder id). Best effort: returns
+// null if it can't be determined. Used only to tell the operator that a newly
+// created client is being pointed at a folder that already holds files.
+const shareFileFolderChildCount = async (folderId) => {
+  try {
+    const { apiBase, authHeaders } = await getShareFileContext();
+    const response = await sfFetch(
+      `${apiBase}/Items(${folderId})/Children?$select=Id`,
+      { headers: authHeaders },
+      `Count children of ShareFile folder ${folderId}`
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return (data.value || []).length;
+  } catch {
+    return null;
+  }
+};
+
 module.exports = {
   getShareFileAccessToken,
   getShareFileContext,
@@ -1022,6 +1041,7 @@ module.exports = {
   renameShareFileFolder,
   deleteShareFileFolder,
   deleteShareFileItemById,
+  shareFileFolderChildCount,
   scanShareFileRootForUnmatchedItems,
   downloadFileContentById,
   getShareFileIngestSince,

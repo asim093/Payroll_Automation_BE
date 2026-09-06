@@ -1,10 +1,10 @@
 
 const Client = require('../models/Client');
 const { getSettings } = require('./settingsService');
-const { joinFolderPath, resolveFolderPath } = require('../utils/folderPath');
+const { joinFolderPath, resolveFolderPath, resolveDropboxFolderPathSync } = require('../utils/folderPath');
 const { findClientsSharingFolders, loadFolderIdentitySettings } = require('../utils/clientFolderIdentity');
-const { ensureDropboxFolderExists, renameDropboxFolder } = require('./dropboxService');
-const { ensureShareFileFolderExists, renameShareFileFolder } = require('./sharefileService');
+const { ensureDropboxFolderExists, renameDropboxFolder, dropboxFolderContentCount } = require('./dropboxService');
+const { ensureShareFileFolderExists, renameShareFileFolder, shareFileFolderChildCount } = require('./sharefileService');
 const { findOrCreateOutlookFolder, renameMailFolder } = require('./graphService');
 const { getAccessTokenFromRefreshToken, isDelegatedConfigAvailable } = require('./delegatedAuthService');
 const { formatError } = require('../utils/formatError');
@@ -37,7 +37,8 @@ const checkForPathCollisions = async (client) => {
 
 const renameClientFolders = async (previousClient, client) => {
   const warnings = [];
-  const { shareFileRootPath } = await getSettings();
+  const { dropboxRootPath, shareFileRootPath } = await getSettings();
+  const nameChanged = previousClient.name !== client.name;
 
   try {
     const result = await renameDropboxFolder(
@@ -55,6 +56,15 @@ const renameClientFolders = async (previousClient, client) => {
     } else if (result.reason === 'multi-segment-change' || result.reason === 'shape-changed') {
       warnings.push(
         'Dropbox: the folder path changed too much to rename automatically — the old folder was left in place, move its files over manually.'
+      );
+    } else if (result.reason === 'unchanged' && nameChanged && String(client.dropboxPath || '').trim()) {
+      const resolved = resolveDropboxFolderPathSync(
+        dropboxRootPath,
+        client.dropboxPath,
+        Boolean(client.dropboxPathIsAbsolute)
+      );
+      warnings.push(
+        `Dropbox: this client's folder stays at "${resolved}", which no longer matches the client name. Rename it in Dropbox manually if you want them to match.`
       );
     }
   } catch (error) {
@@ -84,6 +94,10 @@ const renameClientFolders = async (previousClient, client) => {
     } else if (result.reason === 'multi-segment-change' || result.reason === 'shape-changed') {
       warnings.push(
         'ShareFile: the folder path changed too much to rename automatically — the old folder was left in place, move its files over manually.'
+      );
+    } else if (result.reason === 'unchanged' && nameChanged && String(client.shareFilePath || '').trim()) {
+      warnings.push(
+        `ShareFile: this client's folder stays at "${toPath}", which no longer matches the client name. Rename it in ShareFile manually if you want them to match.`
       );
     }
   } catch (error) {
@@ -125,6 +139,14 @@ const setupClientFolders = async (client) => {
     console.log(
       `  [CLIENT SETUP] Dropbox "${result.path}" - ${result.created ? 'created' : 'already existed'}.`
     );
+    if (!result.created) {
+      const count = await dropboxFolderContentCount(dropboxSegment, client.dropboxPathIsAbsolute).catch(() => 0);
+      if (count > 0) {
+        warnings.push(
+          `Using the existing Dropbox folder "${result.path}", which already contains ${count} item${count === 1 ? '' : 's'}. New files for this client will be added there.`
+        );
+      }
+    }
   } catch (error) {
     const message = formatError(error);
     console.error(`  [CLIENT SETUP] Dropbox folder-create FAILED for "${client.name}": ${message}`);
@@ -138,6 +160,14 @@ const setupClientFolders = async (client) => {
     console.log(
       `  [CLIENT SETUP] ShareFile "${resolvedPath}" - ${result.created ? 'created' : 'already existed'}.`
     );
+    if (!result.created && result.folderId) {
+      const count = await shareFileFolderChildCount(result.folderId);
+      if (count > 0) {
+        warnings.push(
+          `Using the existing ShareFile folder "${resolvedPath}", which already contains ${count} item${count === 1 ? '' : 's'}. New files for this client will be added there.`
+        );
+      }
+    }
   } catch (error) {
     const message = formatError(error);
     console.error(`  [CLIENT SETUP] ShareFile folder-create FAILED for "${client.name}": ${message}`);
