@@ -2,6 +2,8 @@ const MatchingRule = require('../models/MatchingRule');
 
 const LEGACY_TYPES = ['exact_email', 'domain', 'notification_pattern'];
 
+const ruleKey = (type, value) => `${type}::${value}`;
+
 const syncLegacyRulesForClient = async (client) => {
   await MatchingRule.deleteMany({
     clientId: client._id,
@@ -26,8 +28,20 @@ const syncLegacyRulesForClient = async (client) => {
     newRules.push({ clientId: client._id, type: 'notification_pattern', value: notificationPattern, source: 'legacy_sync' });
   }
 
-  if (newRules.length > 0) {
-    await MatchingRule.insertMany(newRules);
+  // Don't shadow a rule the user made by hand on the Rules page: if a manual
+  // rule with the same (type, value) already exists for this client, skip
+  // regenerating it here (BUG-11 - otherwise it shows up twice).
+  const existing = await MatchingRule.find({
+    clientId: client._id,
+    type: { $in: LEGACY_TYPES },
+  })
+    .select('type value')
+    .lean();
+  const alreadyThere = new Set(existing.map((rule) => ruleKey(rule.type, rule.value)));
+  const toInsert = newRules.filter((rule) => !alreadyThere.has(ruleKey(rule.type, rule.value)));
+
+  if (toInsert.length > 0) {
+    await MatchingRule.insertMany(toInsert);
   }
 };
 
