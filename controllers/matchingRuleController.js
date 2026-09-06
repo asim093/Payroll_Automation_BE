@@ -2,12 +2,28 @@ const MatchingRule = require('../models/MatchingRule');
 const Client = require('../models/Client');
 const ReviewQueue = require('../models/ReviewQueue');
 const EmailLog = require('../models/EmailLog');
+const { classifyMatchValue, deriveRuleType } = require('../utils/matchValue');
 
 const VALID_TYPES = ['exact_email', 'domain', 'notification_pattern', 'subject_keyword'];
 const UNIQUE_ACROSS_CLIENTS_TYPES = ['exact_email', 'domain'];
+const SENDER_TYPES = ['exact_email', 'domain'];
 const PREVIEW_LIMIT = 20;
 
 const normalizeValue = (value) => String(value || '').trim().toLowerCase();
+
+// For a sender rule the value's shape is authoritative: "@acme.com" is a domain,
+// "bob@acme.com" is an exact_email, regardless of the type the caller asked for.
+// Returns { type, value } or { error } for an unrecognisable sender value.
+const resolveRuleTypeAndValue = (requestedType, rawValue) => {
+  if (!SENDER_TYPES.includes(requestedType)) {
+    return { type: requestedType, value: normalizeValue(rawValue) };
+  }
+  const derived = deriveRuleType(rawValue);
+  if (!derived) {
+    return { error: 'Enter a full email address or a domain like acme.com.' };
+  }
+  return { type: derived, value: classifyMatchValue(rawValue).value };
+};
 
 const doesEmailMatchRule = (email, type, normalizedValue) => {
   if (!normalizedValue) return false;
@@ -68,28 +84,32 @@ exports.createRule = async (req, res, next) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    const normalizedValue = normalizeValue(value);
+    const resolved = resolveRuleTypeAndValue(type, value);
+    if (resolved.error) {
+      return res.status(400).json({ error: resolved.error });
+    }
+    const { type: finalType, value: normalizedValue } = resolved;
 
-    if (UNIQUE_ACROSS_CLIENTS_TYPES.includes(type)) {
-      const conflict = await MatchingRule.findOne({ type, value: normalizedValue, active: true }).populate(
+    if (UNIQUE_ACROSS_CLIENTS_TYPES.includes(finalType)) {
+      const conflict = await MatchingRule.findOne({ type: finalType, value: normalizedValue, active: true }).populate(
         'clientId',
         'name'
       );
       if (conflict && String(conflict.clientId._id) !== String(clientId)) {
         return res.status(409).json({
-          error: `This ${type === 'exact_email' ? 'email address' : 'domain'} is already used by client "${conflict.clientId.name}"`,
+          error: `This ${finalType === 'exact_email' ? 'email address' : 'domain'} is already used by client "${conflict.clientId.name}"`,
         });
       }
     }
 
-    const duplicateOnSameClient = await MatchingRule.findOne({ clientId, type, value: normalizedValue });
+    const duplicateOnSameClient = await MatchingRule.findOne({ clientId, type: finalType, value: normalizedValue });
     if (duplicateOnSameClient) {
       return res.status(409).json({ error: 'This rule already exists for this client' });
     }
 
     const rule = await MatchingRule.create({
       clientId,
-      type,
+      type: finalType,
       value: normalizedValue,
       source: 'manual',
       createdBy: req.body.createdBy || undefined,
@@ -113,14 +133,19 @@ exports.updateRule = async (req, res, next) => {
     }
 
     if (req.body.value !== undefined || req.body.type !== undefined) {
-      const nextType = req.body.type !== undefined ? req.body.type : rule.type;
-      if (!VALID_TYPES.includes(nextType)) {
+      const requestedType = req.body.type !== undefined ? req.body.type : rule.type;
+      if (!VALID_TYPES.includes(requestedType)) {
         return res.status(400).json({ error: `type must be one of: ${VALID_TYPES.join(', ')}` });
       }
-      const nextValue = normalizeValue(req.body.value !== undefined ? req.body.value : rule.value);
-      if (!nextValue) {
+      const rawValue = req.body.value !== undefined ? req.body.value : rule.value;
+      if (!String(rawValue || '').trim()) {
         return res.status(400).json({ error: 'value is required' });
       }
+      const resolved = resolveRuleTypeAndValue(requestedType, rawValue);
+      if (resolved.error) {
+        return res.status(400).json({ error: resolved.error });
+      }
+      const { type: nextType, value: nextValue } = resolved;
 
       if (UNIQUE_ACROSS_CLIENTS_TYPES.includes(nextType)) {
         const conflict = await MatchingRule.findOne({

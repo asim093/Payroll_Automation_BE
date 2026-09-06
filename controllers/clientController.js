@@ -13,6 +13,7 @@ const {
   dropboxFolderKey,
   shareFileFolderKey,
 } = require('../utils/clientFolderIdentity');
+const { normalizeClientMatchingRules } = require('../utils/matchValue');
 
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -126,6 +127,9 @@ const sendSharedFolderConflict = (res, collisions) => {
 exports.createClient = async (req, res, next) => {
   try {
     const { allowSharedPath, ...clientData } = req.body;
+    if (clientData.matchingRules !== undefined) {
+      clientData.matchingRules = normalizeClientMatchingRules(clientData.matchingRules);
+    }
     const { name, matchingRules } = clientData;
 
     if (!name || !String(name).trim()) {
@@ -325,6 +329,9 @@ exports.getClientById = async (req, res, next) => {
 exports.updateClient = async (req, res, next) => {
   try {
     const { allowSharedPath, ...clientData } = req.body;
+    if (clientData.matchingRules !== undefined) {
+      clientData.matchingRules = normalizeClientMatchingRules(clientData.matchingRules);
+    }
 
     if (clientData.name !== undefined) {
       if (!String(clientData.name).trim()) {
