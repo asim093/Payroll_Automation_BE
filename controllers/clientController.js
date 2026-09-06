@@ -56,9 +56,15 @@ const normalizeDomainForBlockCheck = (value) =>
     .replace(/^www\./, '')
     .split('/')[0];
 
+// Blocks a whole-public-domain match from either field: the domains array, or an
+// email-addresses entry that is really the domain form ("@gmail.com" / "gmail.com").
+// An exact address (bob@gmail.com) normalizes to "bob@gmail.com" and is allowed.
 const findBlockedPublicDomain = (matchingRules) => {
-  const domains = (matchingRules?.domains || []).map((domain) => normalizeDomainForBlockCheck(domain));
-  return domains.find((domain) => BLOCKED_PUBLIC_EMAIL_DOMAINS.has(domain)) || null;
+  const candidates = [
+    ...(matchingRules?.domains || []),
+    ...(matchingRules?.emailAddresses || []),
+  ].map((value) => normalizeDomainForBlockCheck(value));
+  return candidates.find((value) => BLOCKED_PUBLIC_EMAIL_DOMAINS.has(value)) || null;
 };
 
 
