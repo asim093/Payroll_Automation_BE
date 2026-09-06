@@ -3,7 +3,11 @@ const { Dropbox } = require('dropbox');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
-const { resolveFolderPath } = require('../utils/folderPath');
+const {
+  resolveFolderPath,
+  sanitizeForPath,
+  resolveDropboxFolderPathSync,
+} = require('../utils/folderPath');
 const Client = require('../models/Client');
 const UnmatchedDropboxItem = require('../models/UnmatchedDropboxItem');
 const { isDropboxPathIgnored, dropboxFolderAssignClientId } = require('./ignoreRuleService');
@@ -12,8 +16,6 @@ const {
   PROVIDER_KEY: DROPBOX_OAUTH_PROVIDER_KEY,
   refreshAccessToken,
 } = require('./dropboxOAuthSetupService');
-
-const sanitizeForPath = (value) => String(value).replace(/[\\/:*?"<>|]/g, '_').trim();
 
 const getDropboxPathRoot = () => {
   const namespaceId = process.env.DROPBOX_TEAM_FOLDER_NAMESPACE_ID;
@@ -98,11 +100,7 @@ const getEffectiveDropboxRootPath = (storedRootPath) => (getDropboxPathRoot() ? 
 
 const resolveDropboxFolderPath = async (clientFolderSegment, isAbsolute = false) => {
   const { dropboxRootPath } = await getSettings();
-  const effectiveRootPath = getEffectiveDropboxRootPath(dropboxRootPath);
-  const resolvedFolder = resolveFolderPath(effectiveRootPath, clientFolderSegment, isAbsolute);
-
-  const folderSegments = resolvedFolder.split('/').map(sanitizeForPath).filter(Boolean);
-  return `/${folderSegments.join('/')}`;
+  return resolveDropboxFolderPathSync(dropboxRootPath, clientFolderSegment, isAbsolute);
 };
 
 const uploadFileToDropbox = async (clientFolderSegment, fileName, contentBuffer, referenceDate, isAbsolute = false) => {
