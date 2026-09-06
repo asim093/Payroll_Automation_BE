@@ -107,9 +107,49 @@ exports.updateRule = async (req, res, next) => {
     if (!rule) {
       return res.status(404).json({ error: 'Rule not found' });
     }
+
     if (req.body.active !== undefined) {
       rule.active = Boolean(req.body.active);
     }
+
+    if (req.body.value !== undefined || req.body.type !== undefined) {
+      const nextType = req.body.type !== undefined ? req.body.type : rule.type;
+      if (!VALID_TYPES.includes(nextType)) {
+        return res.status(400).json({ error: `type must be one of: ${VALID_TYPES.join(', ')}` });
+      }
+      const nextValue = normalizeValue(req.body.value !== undefined ? req.body.value : rule.value);
+      if (!nextValue) {
+        return res.status(400).json({ error: 'value is required' });
+      }
+
+      if (UNIQUE_ACROSS_CLIENTS_TYPES.includes(nextType)) {
+        const conflict = await MatchingRule.findOne({
+          _id: { $ne: rule._id },
+          type: nextType,
+          value: nextValue,
+          active: true,
+        }).populate('clientId', 'name');
+        if (conflict && String(conflict.clientId._id) !== String(rule.clientId)) {
+          return res.status(409).json({
+            error: `This ${nextType === 'exact_email' ? 'email address' : 'domain'} is already used by client "${conflict.clientId.name}"`,
+          });
+        }
+      }
+
+      const duplicate = await MatchingRule.findOne({
+        _id: { $ne: rule._id },
+        clientId: rule.clientId,
+        type: nextType,
+        value: nextValue,
+      });
+      if (duplicate) {
+        return res.status(409).json({ error: 'This rule already exists for this client' });
+      }
+
+      rule.type = nextType;
+      rule.value = nextValue;
+    }
+
     await rule.save();
     res.status(200).json(rule);
   } catch (error) {
