@@ -391,6 +391,7 @@ exports.updateClient = async (req, res, next) => {
       const renameWarnings = await renameClientFolders(beforeUpdate, client);
       const setupWarnings = await setupClientFolders(client);
       client.folderSetupWarnings = [...renameWarnings, ...setupWarnings];
+      client.folderSetupRetry = { attempts: 0, lastAttemptAt: null, exhausted: false };
       await client.save();
     }
 
@@ -416,6 +417,7 @@ exports.retryFolderSetup = async (req, res, next) => {
     }
 
     client.folderSetupWarnings = await setupClientFolders(client);
+    client.folderSetupRetry = { attempts: 0, lastAttemptAt: null, exhausted: false };
     await client.save();
 
     res.status(200).json(client);

@@ -59,6 +59,11 @@ const clientSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    folderSetupRetry: {
+      attempts: { type: Number, default: 0 },
+      lastAttemptAt: { type: Date },
+      exhausted: { type: Boolean, default: false },
+    },
     wotcFormUrl: {
       type: String,
       trim: true,

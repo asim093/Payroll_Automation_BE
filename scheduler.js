@@ -5,6 +5,7 @@ const connectDB = require('./config/db');
 const { isProcessDue } = require('./services/scanThrottle');
 const { runMailSyncOnce } = require('./services/mailSyncRunner');
 const { runShareFileBridgeOnce } = require('./services/shareFileBridgeRunner');
+const { retryPendingFolderSetups } = require('./services/folderSetupRetryService');
 
 const TICK_SCHEDULE = '*/5 * * * *';
 
@@ -29,6 +30,12 @@ const tick = async () => {
     runIfDue('Mail Sync Engine', 'mailSync', 'mailSyncIntervalMinutes', runMailSyncOnce),
     runIfDue('ShareFile Bridge', 'shareFileBridge', 'shareFileBridgeIntervalMinutes', runShareFileBridgeOnce),
   ]);
+
+  try {
+    await retryPendingFolderSetups();
+  } catch (error) {
+    console.error(`[SCHEDULER] Folder-setup retry failed: ${error.message}`);
+  }
 };
 
 const start = async () => {
