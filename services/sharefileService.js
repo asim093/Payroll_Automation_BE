@@ -45,15 +45,22 @@ const getShareFileAccessTokenViaPassword = async () => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const SF_FETCH_TIMEOUT_MS = 30 * 1000;
-const SF_FETCH_MAX_ATTEMPTS = 4;
+const SF_FETCH_MAX_ATTEMPTS = 6;
 const SF_RETRY_BASE_DELAY_MS = 500;
 
 const isTransientStatus = (status) => status === 408 || status === 429 || (status >= 500 && status <= 599);
 
-const sfFetch = async (url, options = {}, label = 'ShareFile request', { onUnauthorized } = {}) => {
+const SF_FETCH_MAX_AUTH_RETRIES = 2;
+
+const defaultReauth = async () => {
+  const { accessToken } = await getShareFileAccessToken({ forceRefresh: true });
+  return { Authorization: `Bearer ${accessToken}` };
+};
+
+const sfFetch = async (url, options = {}, label = 'ShareFile request', { onUnauthorized = defaultReauth } = {}) => {
   let lastError;
   let headers = options.headers;
-  let refreshedAuth = false;
+  let authRetries = 0;
   for (let attempt = 1; attempt <= SF_FETCH_MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), SF_FETCH_TIMEOUT_MS);
@@ -61,12 +68,14 @@ const sfFetch = async (url, options = {}, label = 'ShareFile request', { onUnaut
       const response = await fetch(url, { ...options, headers, signal: controller.signal });
       clearTimeout(timeoutId);
 
-      if (response.status === 401 && onUnauthorized && !refreshedAuth) {
-        refreshedAuth = true;
-        console.warn(`${label}: HTTP 401 - forcing a fresh ShareFile token and retrying once.`);
+      if (response.status === 401 && onUnauthorized && authRetries < SF_FETCH_MAX_AUTH_RETRIES) {
+        authRetries += 1;
+        console.warn(
+          `${label}: HTTP 401 - refreshing ShareFile token and retrying (${authRetries}/${SF_FETCH_MAX_AUTH_RETRIES}).`
+        );
         try {
           headers = { ...headers, ...(await onUnauthorized()) };
-          await sleep(SF_RETRY_BASE_DELAY_MS);
+          await sleep(SF_RETRY_BASE_DELAY_MS * authRetries);
           continue;
         } catch (refreshError) {
           console.error(`${label}: token refresh failed - ${refreshError.message}`);
@@ -167,19 +176,12 @@ const refreshShareFileTokenWithRotationRetry = async (initialRefreshToken) => {
 };
 
 let cachedToken = null;
+let tokenRefreshInFlight = null;
 const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
 const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
+const FRESH_TOKEN_TRUST_WINDOW_MS = 15 * 1000;
 
-// @param options.forceRefresh - skips the cache and does a real exchange
-//   even if a cached token is still valid. Needed right after a fresh
-//   /oauth/sharefile/start login (e.g. the oauthSmokeTestService.js check)
-//   so a stale-but-still-valid cached token from BEFORE that login doesn't
-//   mask whether the just-obtained one actually works.
-const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
-  if (!forceRefresh && cachedToken && cachedToken.expiresAt > Date.now()) {
-    return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
-  }
-
+const exchangeShareFileToken = async () => {
   const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
     process.env;
 
@@ -187,47 +189,78 @@ const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
     throw new Error('ShareFile credentials missing in .env (SHAREFILE_CLIENT_ID/SHAREFILE_CLIENT_SECRET/SHAREFILE_SUBDOMAIN).');
   }
 
-  try {
-    let result;
-    const stored = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
-    if (stored?.refreshToken) {
-      result = await refreshShareFileTokenWithRotationRetry(stored.refreshToken);
-    } else if (SHAREFILE_USERNAME && SHAREFILE_PASSWORD) {
-      result = await getShareFileAccessTokenViaPassword();
-    } else {
-      throw new Error(
-        'No ShareFile authorization available — either complete the hosted login at /oauth/sharefile/start, or set SHAREFILE_USERNAME/SHAREFILE_PASSWORD in .env.'
-      );
-    }
-
-    const lifetimeMs = result.expiresIn ? result.expiresIn * 1000 : DEFAULT_TOKEN_LIFETIME_MS;
-    cachedToken = {
-      accessToken: result.accessToken,
-      subdomain: result.subdomain,
-      expiresAt: Date.now() + Math.max(0, lifetimeMs - EXPIRY_SAFETY_BUFFER_MS),
-    };
-
-    return { accessToken: result.accessToken, subdomain: result.subdomain };
-  } catch (error) {
-    console.error(`getShareFileAccessToken ERROR: ${formatError(error)}`);
-    throw error;
+  const stored = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
+  let result;
+  if (stored?.refreshToken) {
+    result = await refreshShareFileTokenWithRotationRetry(stored.refreshToken);
+  } else if (SHAREFILE_USERNAME && SHAREFILE_PASSWORD) {
+    result = await getShareFileAccessTokenViaPassword();
+  } else {
+    throw new Error(
+      'No ShareFile authorization available — either complete the hosted login at /oauth/sharefile/start, or set SHAREFILE_USERNAME/SHAREFILE_PASSWORD in .env.'
+    );
   }
+
+  const lifetimeMs = result.expiresIn ? result.expiresIn * 1000 : DEFAULT_TOKEN_LIFETIME_MS;
+  cachedToken = {
+    accessToken: result.accessToken,
+    subdomain: result.subdomain,
+    mintedAt: Date.now(),
+    expiresAt: Date.now() + Math.max(0, lifetimeMs - EXPIRY_SAFETY_BUFFER_MS),
+  };
+  return { accessToken: result.accessToken, subdomain: result.subdomain };
+};
+
+// @param options.forceRefresh - skips the cache and does a real exchange
+//   even if a cached token is still valid. Needed right after a fresh
+//   /oauth/sharefile/start login (e.g. the oauthSmokeTestService.js check)
+//   so a stale-but-still-valid cached token from BEFORE that login doesn't
+//   mask whether the just-obtained one actually works.
+const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
+  const now = Date.now();
+  if (cachedToken && cachedToken.expiresAt > now) {
+    if (!forceRefresh) {
+      return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
+    }
+    if (cachedToken.mintedAt && now - cachedToken.mintedAt < FRESH_TOKEN_TRUST_WINDOW_MS) {
+      return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
+    }
+  }
+
+  if (tokenRefreshInFlight) {
+    return tokenRefreshInFlight;
+  }
+  tokenRefreshInFlight = exchangeShareFileToken()
+    .catch((error) => {
+      console.error(`getShareFileAccessToken ERROR: ${formatError(error)}`);
+      throw error;
+    })
+    .finally(() => {
+      tokenRefreshInFlight = null;
+    });
+  return tokenRefreshInFlight;
 };
 
 const SHAREFILE_ROOT_ALIAS = 'allshared';
 
-const getShareFileContext = async ({ forceRefresh = false, _retriedAfter401 = false } = {}) => {
+const getShareFileContext = async ({ forceRefresh = false } = {}) => {
   const { accessToken, subdomain } = await getShareFileAccessToken({ forceRefresh });
   const apiBase = `https://${subdomain}.sf-api.com/sf/v3`;
-  const authHeaders = { Authorization: `Bearer ${accessToken}` };
+  let authHeaders = { Authorization: `Bearer ${accessToken}` };
+
+  const onUnauthorized = async () => {
+    const refreshed = await getShareFileAccessToken({ forceRefresh: true });
+    authHeaders = { Authorization: `Bearer ${refreshed.accessToken}` };
+    return authHeaders;
+  };
 
   try {
-    const rootResponse = await fetch(`${apiBase}/Items(${SHAREFILE_ROOT_ALIAS})`, { headers: authHeaders });
-
-    if (rootResponse.status === 401 && !_retriedAfter401) {
-      console.warn('getShareFileContext: cached token was rejected (401) - forcing a fresh token exchange and retrying once.');
-      return getShareFileContext({ forceRefresh: true, _retriedAfter401: true });
-    }
+    const rootResponse = await sfFetch(
+      `${apiBase}/Items(${SHAREFILE_ROOT_ALIAS})`,
+      { headers: authHeaders },
+      'Resolve ShareFile root',
+      { onUnauthorized }
+    );
 
     if (!rootResponse.ok) {
       const errorBody = await rootResponse.text();
@@ -342,7 +375,7 @@ const downloadFileContentById = async (fileId) => {
     const { apiBase, authHeaders } = await getShareFileContext();
 
     const downloadUrl = `${apiBase}/Items(${fileId})/Download`;
-    const downloadResponse = await fetch(downloadUrl, { headers: authHeaders });
+    const downloadResponse = await sfFetch(downloadUrl, { headers: authHeaders }, `Download ShareFile item ${fileId}`);
     if (!downloadResponse.ok) {
       const errorBody = await downloadResponse.text();
       throw new Error(`Download failed (${downloadResponse.status}): ${errorBody}`);
@@ -402,9 +435,10 @@ const findLatestLogiFormsCsvInShareFile = async (folderPath) => {
   try {
     const { apiBase, authHeaders, rootId } = await getShareFileContext();
 
-    const folderResponse = await fetch(
+    const folderResponse = await sfFetch(
       `${apiBase}/Items(${rootId})/ByPath?path=${encodeURIComponent(cleanPath)}`,
-      { headers: authHeaders }
+      { headers: authHeaders },
+      `Resolve "${cleanPath}"`
     );
     if (!folderResponse.ok) {
       const errorBody = await folderResponse.text();
@@ -412,7 +446,11 @@ const findLatestLogiFormsCsvInShareFile = async (folderPath) => {
     }
     const folder = await folderResponse.json();
 
-    const childrenResponse = await fetch(`${apiBase}/Items(${folder.Id})/Children`, { headers: authHeaders });
+    const childrenResponse = await sfFetch(
+      `${apiBase}/Items(${folder.Id})/Children`,
+      { headers: authHeaders },
+      `List "${cleanPath}"`
+    );
     if (!childrenResponse.ok) {
       const errorBody = await childrenResponse.text();
       throw new Error(`Could not list files in "${cleanPath}" (${childrenResponse.status}): ${errorBody}`);
@@ -454,7 +492,7 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName, isAbsolute 
       const { shareFileRootPath } = await getSettings();
       const itemPath = `${resolveFolderPath(shareFileRootPath, clientFolderSegment, isAbsolute)}/${fileName}`;
       const byPathUrl = `${apiBase}/Items(${rootId})/ByPath?path=${encodeURIComponent(itemPath)}`;
-      const itemResponse = await fetch(byPathUrl, { headers: authHeaders });
+      const itemResponse = await sfFetch(byPathUrl, { headers: authHeaders }, `Resolve "${itemPath}"`);
       if (!itemResponse.ok) {
         const errorBody = await itemResponse.text();
         throw new Error(`Item lookup failed (${itemResponse.status}): ${errorBody}`);
@@ -537,9 +575,11 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
   let currentPath = '';
   if (shareFileRootPath) {
     try {
-      const rootResponse = await fetch(`${apiBase}/Items(${accountRootId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`, {
-        headers: authHeaders,
-      });
+      const rootResponse = await sfFetch(
+        `${apiBase}/Items(${accountRootId})/ByPath?path=${encodeURIComponent(shareFileRootPath)}`,
+        { headers: authHeaders },
+        `Resolve root "${shareFileRootPath}"`
+      );
       if (!rootResponse.ok) return 0;
       const rootFolder = await rootResponse.json();
       currentId = rootFolder.Id;
@@ -861,7 +901,11 @@ const resolveShareFileFolderId = async (fullPath) => {
   let currentId = rootId;
 
   for (const segment of segments) {
-    const childrenResponse = await fetch(`${apiBase}/Items(${currentId})/Children`, { headers: authHeaders });
+    const childrenResponse = await sfFetch(
+      `${apiBase}/Items(${currentId})/Children`,
+      { headers: authHeaders },
+      `Walk to "${fullPath}"`
+    );
     if (!childrenResponse.ok) {
       const errorBody = await childrenResponse.text();
       throw new Error(`Could not list children while walking to "${fullPath}" (${childrenResponse.status}): ${errorBody}`);
@@ -933,10 +977,11 @@ const deleteShareFileFolder = async (fullPath) => {
       return { deleted: false };
     }
 
-    const deleteResponse = await fetch(`${apiBase}/Items(${folderId})`, {
-      method: 'DELETE',
-      headers: authHeaders,
-    });
+    const deleteResponse = await sfFetch(
+      `${apiBase}/Items(${folderId})`,
+      { method: 'DELETE', headers: authHeaders },
+      `Delete ShareFile folder "${fullPath}"`
+    );
     if (!deleteResponse.ok && deleteResponse.status !== 404) {
       const errorBody = await deleteResponse.text();
       throw new Error(`Could not delete folder "${fullPath}" (${deleteResponse.status}): ${errorBody}`);
@@ -952,10 +997,11 @@ const deleteShareFileFolder = async (fullPath) => {
 
 const deleteShareFileItemById = async (itemId) => {
   const { apiBase, authHeaders } = await getShareFileContext();
-  const deleteResponse = await fetch(`${apiBase}/Items(${itemId})`, {
-    method: 'DELETE',
-    headers: authHeaders,
-  });
+  const deleteResponse = await sfFetch(
+    `${apiBase}/Items(${itemId})`,
+    { method: 'DELETE', headers: authHeaders },
+    `Delete ShareFile item ${itemId}`
+  );
   if (!deleteResponse.ok && deleteResponse.status !== 404) {
     const errorBody = await deleteResponse.text();
     throw new Error(`Could not delete item ${itemId} (${deleteResponse.status}): ${errorBody}`);
