@@ -974,7 +974,7 @@ const deleteShareFileFolder = async (fullPath) => {
     const { apiBase, authHeaders } = await getShareFileContext();
     const folderId = await resolveShareFileFolderId(fullPath);
     if (!folderId) {
-      return { deleted: false };
+      return { deleted: false, path: fullPath, folderId: null };
     }
 
     const deleteResponse = await sfFetch(
@@ -987,8 +987,8 @@ const deleteShareFileFolder = async (fullPath) => {
       throw new Error(`Could not delete folder "${fullPath}" (${deleteResponse.status}): ${errorBody}`);
     }
 
-    console.log(`  [SHAREFILE] Deleted folder "${fullPath}".`);
-    return { deleted: true };
+    console.log(`  [SHAREFILE] Deleted folder "${fullPath}" (id ${folderId}).`);
+    return { deleted: true, path: fullPath, folderId };
   } catch (error) {
     console.error(`deleteShareFileFolder ERROR ("${fullPath}"): ${formatError(error)}`);
     throw error;
