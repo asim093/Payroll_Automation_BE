@@ -15,6 +15,21 @@ const oauthCredentialSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    accessToken: {
+      type: String,
+    },
+    accessTokenExpiresAt: {
+      type: Date,
+    },
+    subdomain: {
+      type: String,
+    },
+    refreshLockedUntil: {
+      type: Date,
+    },
+    refreshLockHolder: {
+      type: String,
+    },
   },
   { timestamps: true }
 );

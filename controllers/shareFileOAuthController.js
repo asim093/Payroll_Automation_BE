@@ -1,4 +1,5 @@
 const { buildAuthorizationUrl, completeLogin } = require('../services/shareFileOAuthSetupService');
+const { _resetMemo: resetShareFileTokenMemo } = require('../services/shareFileTokenManager');
 const { formatError } = require('../utils/formatError');
 const { renderOAuthResultPage, escapeHtml } = require('../utils/oauthPageRenderer');
 
@@ -58,6 +59,7 @@ const shareFileLoginCallback = async (req, res) => {
 
   try {
     await completeLogin(code);
+    resetShareFileTokenMemo();
     renderOAuthResultPage(res, 200, {
       tone: 'ok',
       heading: 'Login successful',

@@ -39,7 +39,17 @@ const buildAuthorizationUrl = () => {
 };
 
 const saveRefreshToken = async (refreshToken) => {
-  await OAuthCredential.findOneAndUpdate({ provider: PROVIDER_KEY }, { refreshToken }, { upsert: true });
+  await OAuthCredential.findOneAndUpdate(
+    { provider: PROVIDER_KEY },
+    {
+      refreshToken,
+      accessToken: null,
+      accessTokenExpiresAt: null,
+      refreshLockedUntil: null,
+      refreshLockHolder: null,
+    },
+    { upsert: true }
+  );
 };
 
 const completeLogin = async (code) => {
@@ -93,15 +103,12 @@ const refreshAccessToken = async (refreshToken) => {
     throw error;
   }
 
-  if (data.refresh_token) {
-    await saveRefreshToken(data.refresh_token);
-  }
-
   return {
     accessToken: data.access_token,
     subdomain: data.subdomain || getSubdomain(),
     expiresIn: data.expires_in,
+    newRefreshToken: data.refresh_token || null,
   };
 };
 
-module.exports = { PROVIDER_KEY, buildAuthorizationUrl, completeLogin, refreshAccessToken };
+module.exports = { PROVIDER_KEY, buildAuthorizationUrl, completeLogin, refreshAccessToken, getSubdomain };

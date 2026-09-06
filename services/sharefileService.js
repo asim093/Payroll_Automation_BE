@@ -2,15 +2,11 @@
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
-const OAuthCredential = require('../models/OAuthCredential');
 const { formatError } = require('../utils/formatError');
 const { getSettings } = require('./settingsService');
 const { isShareFilePathIgnored, shareFileFolderAssignClientId } = require('./ignoreRuleService');
 const { resolveFolderPath } = require('../utils/folderPath');
-const {
-  PROVIDER_KEY: SHAREFILE_OAUTH_PROVIDER_KEY,
-  refreshAccessToken,
-} = require('./shareFileOAuthSetupService');
+const { getAccessToken: getShareFileAccessTokenCoordinated } = require('./shareFileTokenManager');
 
 const getShareFileAccessTokenViaPassword = async () => {
   const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
@@ -148,97 +144,16 @@ const listAllChildren = async (folderId, apiBase, authHeaders, label = 'folder',
   return collected;
 };
 
-const isTokenRotationRaceError = (error) =>
-  error?.code === 'invalid_grant' || /invalid or revoked/i.test(error?.message || '');
-
-const MAX_ROTATION_RETRY_ATTEMPTS = 3;
-const ROTATION_RETRY_DELAY_MS = 400;
-
-const refreshShareFileTokenWithRotationRetry = async (initialRefreshToken) => {
-  let tokenToTry = initialRefreshToken;
-  for (let attempt = 1; attempt <= MAX_ROTATION_RETRY_ATTEMPTS; attempt++) {
-    try {
-      return await refreshAccessToken(tokenToTry);
-    } catch (error) {
-      const isLastAttempt = attempt === MAX_ROTATION_RETRY_ATTEMPTS;
-      if (!isTokenRotationRaceError(error) || isLastAttempt) {
-        throw error;
-      }
-      console.warn(
-        `getShareFileAccessToken: refresh token was already rotated by another process (attempt ${attempt}/${MAX_ROTATION_RETRY_ATTEMPTS}) — re-fetching the latest stored token and retrying.`
-      );
-      await sleep(ROTATION_RETRY_DELAY_MS);
-      const latest = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
-      if (!latest?.refreshToken) throw error;
-      tokenToTry = latest.refreshToken;
-    }
-  }
-};
-
-let cachedToken = null;
-let tokenRefreshInFlight = null;
-const EXPIRY_SAFETY_BUFFER_MS = 60 * 1000;
-const DEFAULT_TOKEN_LIFETIME_MS = 5 * 60 * 1000;
-const FRESH_TOKEN_TRUST_WINDOW_MS = 15 * 1000;
-
-const exchangeShareFileToken = async () => {
-  const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
-    process.env;
-
-  if (!SHAREFILE_CLIENT_ID || !SHAREFILE_CLIENT_SECRET || !SHAREFILE_SUBDOMAIN) {
-    throw new Error('ShareFile credentials missing in .env (SHAREFILE_CLIENT_ID/SHAREFILE_CLIENT_SECRET/SHAREFILE_SUBDOMAIN).');
-  }
-
-  const stored = await OAuthCredential.findOne({ provider: SHAREFILE_OAUTH_PROVIDER_KEY }).lean();
-  let result;
-  if (stored?.refreshToken) {
-    result = await refreshShareFileTokenWithRotationRetry(stored.refreshToken);
-  } else if (SHAREFILE_USERNAME && SHAREFILE_PASSWORD) {
-    result = await getShareFileAccessTokenViaPassword();
-  } else {
-    throw new Error(
-      'No ShareFile authorization available — either complete the hosted login at /oauth/sharefile/start, or set SHAREFILE_USERNAME/SHAREFILE_PASSWORD in .env.'
-    );
-  }
-
-  const lifetimeMs = result.expiresIn ? result.expiresIn * 1000 : DEFAULT_TOKEN_LIFETIME_MS;
-  cachedToken = {
-    accessToken: result.accessToken,
-    subdomain: result.subdomain,
-    mintedAt: Date.now(),
-    expiresAt: Date.now() + Math.max(0, lifetimeMs - EXPIRY_SAFETY_BUFFER_MS),
-  };
-  return { accessToken: result.accessToken, subdomain: result.subdomain };
-};
-
-// @param options.forceRefresh - skips the cache and does a real exchange
-//   even if a cached token is still valid. Needed right after a fresh
-//   /oauth/sharefile/start login (e.g. the oauthSmokeTestService.js check)
-//   so a stale-but-still-valid cached token from BEFORE that login doesn't
-//   mask whether the just-obtained one actually works.
 const getShareFileAccessToken = async ({ forceRefresh = false } = {}) => {
-  const now = Date.now();
-  if (cachedToken && cachedToken.expiresAt > now) {
-    if (!forceRefresh) {
-      return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
+  try {
+    return await getShareFileAccessTokenCoordinated({ forceRefresh });
+  } catch (error) {
+    const noAuth = /No ShareFile authorization available/i.test(error.message || '');
+    if (noAuth && process.env.SHAREFILE_USERNAME && process.env.SHAREFILE_PASSWORD) {
+      return getShareFileAccessTokenViaPassword();
     }
-    if (cachedToken.mintedAt && now - cachedToken.mintedAt < FRESH_TOKEN_TRUST_WINDOW_MS) {
-      return { accessToken: cachedToken.accessToken, subdomain: cachedToken.subdomain };
-    }
+    throw error;
   }
-
-  if (tokenRefreshInFlight) {
-    return tokenRefreshInFlight;
-  }
-  tokenRefreshInFlight = exchangeShareFileToken()
-    .catch((error) => {
-      console.error(`getShareFileAccessToken ERROR: ${formatError(error)}`);
-      throw error;
-    })
-    .finally(() => {
-      tokenRefreshInFlight = null;
-    });
-  return tokenRefreshInFlight;
 };
 
 const SHAREFILE_ROOT_ALIAS = 'allshared';
