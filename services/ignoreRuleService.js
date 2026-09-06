@@ -98,11 +98,24 @@ const sweepEmail = async (rule) => {
   const emailLogs = await EmailLog.find(senderQuery).select('_id').lean();
   if (emailLogs.length === 0) return 0;
   const ids = emailLogs.map((log) => log._id);
-  const result = await ReviewQueue.updateMany(
-    { type: 'email', referenceId: { $in: ids }, resolvedClientId: null, archivedReason: null },
+  const pending = await ReviewQueue.find({
+    type: 'email',
+    referenceId: { $in: ids },
+    resolvedClientId: null,
+    archivedReason: null,
+  })
+    .select('_id referenceId')
+    .lean();
+  if (pending.length === 0) return 0;
+  await ReviewQueue.updateMany(
+    { _id: { $in: pending.map((entry) => entry._id) } },
     { archivedReason: 'auto_dismissed_by_rule' }
   );
-  return result.modifiedCount || 0;
+  await EmailLog.updateMany(
+    { _id: { $in: pending.map((entry) => entry.referenceId) } },
+    { status: 'ignored' }
+  );
+  return pending.length;
 };
 
 const sweepFolderDismiss = async (Model, rule) => {
