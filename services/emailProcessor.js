@@ -335,8 +335,14 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
       attachments: [],
       authMode,
     });
+    await ReviewQueue.create({
+      type: 'email',
+      referenceId: emailLog._id,
+      reason: 'no_match',
+      archivedReason: 'auto_dismissed_by_rule',
+    });
     console.log(
-      `[IGNORED] ${messageId} — sender "${sender}" matches an ignore rule. EmailLog created (status: ignored), not added to Review Queue.`
+      `[IGNORED] ${messageId} — sender "${sender}" matches an ignore rule. Logged and auto-dismissed (visible in Dismissed).`
     );
     return emailLog;
   }

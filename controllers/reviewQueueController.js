@@ -131,8 +131,12 @@ exports.restoreReviewQueueEntry = async (req, res, next) => {
     if (!entry.archivedReason) {
       return res.status(400).json({ error: 'This item is not dismissed.' });
     }
+    const wasAutoDismissed = entry.archivedReason === 'auto_dismissed_by_rule';
     entry.archivedReason = undefined;
     await entry.save();
+    if (wasAutoDismissed && entry.type === 'email') {
+      await EmailLog.findByIdAndUpdate(entry.referenceId, { status: 'needs_review' });
+    }
     res.status(200).json(entry);
   } catch (error) {
     next(error);

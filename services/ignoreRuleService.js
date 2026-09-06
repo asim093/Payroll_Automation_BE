@@ -100,7 +100,7 @@ const sweepEmail = async (rule) => {
   const ids = emailLogs.map((log) => log._id);
   const result = await ReviewQueue.updateMany(
     { type: 'email', referenceId: { $in: ids }, resolvedClientId: null, archivedReason: null },
-    { archivedReason: 'manually_dismissed' }
+    { archivedReason: 'auto_dismissed_by_rule' }
   );
   return result.modifiedCount || 0;
 };
