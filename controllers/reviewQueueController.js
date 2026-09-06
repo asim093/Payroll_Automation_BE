@@ -129,7 +129,7 @@ exports.restoreReviewQueueEntry = async (req, res, next) => {
       return res.status(404).json({ error: 'Review queue entry not found' });
     }
     if (!entry.archivedReason) {
-      return res.status(400).json({ error: 'This item is not dismissed.' });
+      return res.status(200).json(entry);
     }
     const wasAutoDismissed = entry.archivedReason === 'auto_dismissed_by_rule';
     entry.archivedReason = undefined;

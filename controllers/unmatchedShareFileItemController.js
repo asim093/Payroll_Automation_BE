@@ -168,6 +168,9 @@ exports.restoreUnmatchedItem = async (req, res, next) => {
     if (!item) {
       return res.status(404).json({ error: 'Unmatched item not found' });
     }
+    if (item.status === 'unresolved') {
+      return res.status(200).json(item);
+    }
     if (item.status !== 'dismissed') {
       return res.status(400).json({ error: `This item is ${item.status}, not dismissed.` });
     }
