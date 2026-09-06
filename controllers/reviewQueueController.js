@@ -78,11 +78,16 @@ const attachRelatedData = async (entries) => {
 exports.getAllReviewQueueEntries = async (req, res, next) => {
   try {
     const filter =
-      req.query.all === 'true' ? {} : { resolvedClientId: null, archivedReason: null };
+      req.query.all === 'true'
+        ? {}
+        : req.query.dismissed === 'true'
+          ? { archivedReason: { $in: ['manually_dismissed', 'auto_dismissed_by_rule'] } }
+          : { resolvedClientId: null, archivedReason: null };
     const entries = await ReviewQueue.find(filter)
+      .select('type referenceId reason archivedReason resolvedClientId suggestedClientId createdAt')
       .sort({ createdAt: -1 })
-      .populate('resolvedClientId')
-      .populate('suggestedClientId')
+      .populate('resolvedClientId', 'name')
+      .populate('suggestedClientId', 'name')
       .lean();
     const enriched = await attachRelatedData(entries);
     res.status(200).json(enriched);

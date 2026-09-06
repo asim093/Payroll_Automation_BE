@@ -45,4 +45,6 @@ const unmatchedShareFileItemSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+unmatchedShareFileItemSchema.index({ status: 1, discoveredAt: -1 });
+
 module.exports = mongoose.model('UnmatchedShareFileItem', unmatchedShareFileItemSchema);

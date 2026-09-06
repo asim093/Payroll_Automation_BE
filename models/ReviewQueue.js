@@ -48,4 +48,7 @@ const reviewQueueSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+reviewQueueSchema.index({ resolvedClientId: 1, archivedReason: 1, createdAt: -1 });
+reviewQueueSchema.index({ referenceId: 1 });
+
 module.exports = mongoose.model('ReviewQueue', reviewQueueSchema);

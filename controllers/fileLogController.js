@@ -25,7 +25,11 @@ exports.createFileLog = async (req, res, next) => {
 
 exports.getAllFileLogs = async (req, res, next) => {
   try {
-    const fileLogs = await FileLog.find().sort({ createdAt: -1 }).populate('clientId');
+    const fileLogs = await FileLog.find()
+      .select('originalName status source destinationPath errorMessage sourceMessageId processedAt clientId createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .populate('clientId', 'name')
+      .lean();
     res.status(200).json(fileLogs);
   } catch (error) {
     next(error);

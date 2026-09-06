@@ -24,9 +24,18 @@ const attachSuggestedClient = (items, clients) => {
 
 exports.getAllUnmatchedItems = async (req, res, next) => {
   try {
-    const filter = req.query.all === 'true' ? {} : { status: 'unresolved' };
+    const filter =
+      req.query.all === 'true'
+        ? {}
+        : req.query.dismissed === 'true'
+          ? { status: 'dismissed' }
+          : { status: 'unresolved' };
     const [items, clients] = await Promise.all([
-      UnmatchedShareFileItem.find(filter).sort({ discoveredAt: -1 }).populate('resolvedClientId').lean(),
+      UnmatchedShareFileItem.find(filter)
+        .select('name path discoveredAt status itemId resolvedClientId')
+        .sort({ discoveredAt: -1 })
+        .populate('resolvedClientId', 'name')
+        .lean(),
       Client.find().select('name').lean(),
     ]);
     res.status(200).json(attachSuggestedClient(items, clients));

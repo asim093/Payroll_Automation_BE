@@ -23,7 +23,11 @@ exports.createEmailLog = async (req, res, next) => {
 exports.getAllEmailLogs = async (req, res, next) => {
   try {
     const filter = req.query.all === 'true' ? {} : { archived: { $ne: true } };
-    const emailLogs = await EmailLog.find(filter).sort({ createdAt: -1 }).populate('matchedClientId');
+    const emailLogs = await EmailLog.find(filter)
+      .select('messageId sender subject receivedAt status processingError matchedClientId createdAt')
+      .sort({ createdAt: -1 })
+      .populate('matchedClientId', 'name')
+      .lean();
     res.status(200).json(emailLogs);
   } catch (error) {
     next(error);
