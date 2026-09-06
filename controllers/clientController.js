@@ -7,6 +7,12 @@ const { setupClientFolders, renameClientFolders } = require('../services/clientF
 const { deleteClientFolders } = require('../services/clientFolderCleanupService');
 const { syncLegacyRulesForClient, deleteAllRulesForClient } = require('../services/matchingRuleSyncService');
 const { listPayrollFiles, listAllFilesInFolder } = require('../services/dropboxService');
+const {
+  findClientsSharingFolders,
+  loadFolderIdentitySettings,
+  dropboxFolderKey,
+  shareFileFolderKey,
+} = require('../utils/clientFolderIdentity');
 
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -56,9 +62,65 @@ const findBlockedPublicDomain = (matchingRules) => {
 };
 
 
+const PATH_GUARD_FIELDS = [
+  'name',
+  'dropboxPath',
+  'shareFilePath',
+  'dropboxPathIsAbsolute',
+  'shareFilePathIsAbsolute',
+];
+
+// Returns the other clients whose Dropbox and/or ShareFile folder resolves to the
+// same canonical location as `candidateClient`. Paths that differ only by
+// formatting (absolute vs relative, root prefix, slashes, case) still count as
+// the same folder — this is what closes the silent-merge bypass.
+const findSharedFolderCollisions = async (candidateClient, excludeId) => {
+  const settings = await loadFolderIdentitySettings();
+  const others = await Client.find(excludeId ? { _id: { $ne: excludeId } } : {})
+    .select('name dropboxPath dropboxPathIsAbsolute shareFilePath shareFilePathIsAbsolute')
+    .lean();
+
+  const subject = { ...candidateClient, _id: excludeId || null };
+  const { dropbox, shareFile } = findClientsSharingFolders(subject, others, settings);
+
+  const collisions = [];
+  dropbox.forEach((other) =>
+    collisions.push({
+      type: 'Dropbox',
+      clientId: String(other._id),
+      clientName: other.name,
+      canonicalPath: dropboxFolderKey(other, settings.dropboxRootPath),
+    })
+  );
+  shareFile.forEach((other) =>
+    collisions.push({
+      type: 'ShareFile',
+      clientId: String(other._id),
+      clientName: other.name,
+      canonicalPath: shareFileFolderKey(other, settings.shareFileRootPath),
+    })
+  );
+  return collisions;
+};
+
+const sendSharedFolderConflict = (res, collisions) => {
+  const detail = collisions
+    .map((collision) => `the ${collision.type} folder is already used by client "${collision.clientName}"`)
+    .join('; ');
+  return res.status(409).json({
+    error: 'shared_folder_path',
+    message:
+      `This path collides with another client: ${detail}. Files from both clients would land in the same folder. ` +
+      'Pick a different path, or confirm to keep the folder shared.',
+    collisions,
+  });
+};
+
+
 exports.createClient = async (req, res, next) => {
   try {
-    const { name, matchingRules } = req.body;
+    const { allowSharedPath, ...clientData } = req.body;
+    const { name, matchingRules } = clientData;
 
     if (!name || !String(name).trim()) {
       return res.status(400).json({ error: 'name is required' });
@@ -76,7 +138,14 @@ exports.createClient = async (req, res, next) => {
       });
     }
 
-    const client = await Client.create(req.body);
+    if (allowSharedPath !== true) {
+      const collisions = await findSharedFolderCollisions(clientData, null);
+      if (collisions.length > 0) {
+        return sendSharedFolderConflict(res, collisions);
+      }
+    }
+
+    const client = await Client.create(clientData);
 
     client.folderSetupWarnings = await setupClientFolders(client);
     await client.save();
@@ -249,18 +318,20 @@ exports.getClientById = async (req, res, next) => {
 
 exports.updateClient = async (req, res, next) => {
   try {
-    if (req.body.name !== undefined) {
-      if (!String(req.body.name).trim()) {
+    const { allowSharedPath, ...clientData } = req.body;
+
+    if (clientData.name !== undefined) {
+      if (!String(clientData.name).trim()) {
         return res.status(400).json({ error: 'name is required' });
       }
-      const duplicate = await findDuplicateByName(req.body.name, req.params.id);
+      const duplicate = await findDuplicateByName(clientData.name, req.params.id);
       if (duplicate) {
         return res.status(409).json({ error: 'A client with this name already exists' });
       }
     }
 
-    if (req.body.matchingRules !== undefined) {
-      const blockedDomain = findBlockedPublicDomain(req.body.matchingRules);
+    if (clientData.matchingRules !== undefined) {
+      const blockedDomain = findBlockedPublicDomain(clientData.matchingRules);
       if (blockedDomain) {
         return res.status(400).json({
           error: `"${blockedDomain}" is a public email provider and cannot be used as a matching domain. Add the specific email address instead.`,
@@ -274,19 +345,34 @@ exports.updateClient = async (req, res, next) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    const client = await Client.findByIdAndUpdate(req.params.id, req.body, {
+    const touchesPathFields = PATH_GUARD_FIELDS.some((field) => field in clientData);
+    if (touchesPathFields && allowSharedPath !== true) {
+      const candidate = {
+        name: clientData.name ?? beforeUpdate.name,
+        dropboxPath: clientData.dropboxPath ?? beforeUpdate.dropboxPath,
+        dropboxPathIsAbsolute: clientData.dropboxPathIsAbsolute ?? beforeUpdate.dropboxPathIsAbsolute,
+        shareFilePath: clientData.shareFilePath ?? beforeUpdate.shareFilePath,
+        shareFilePathIsAbsolute: clientData.shareFilePathIsAbsolute ?? beforeUpdate.shareFilePathIsAbsolute,
+      };
+      const collisions = await findSharedFolderCollisions(candidate, req.params.id);
+      if (collisions.length > 0) {
+        return sendSharedFolderConflict(res, collisions);
+      }
+    }
+
+    const client = await Client.findByIdAndUpdate(req.params.id, clientData, {
       new: true,
       runValidators: true,
     });
 
     const pathAffectingFieldsChanged =
-      (req.body.dropboxPath !== undefined && req.body.dropboxPath.trim() !== (beforeUpdate.dropboxPath || '')) ||
-      (req.body.shareFilePath !== undefined && req.body.shareFilePath.trim() !== (beforeUpdate.shareFilePath || '')) ||
-      (req.body.dropboxPathIsAbsolute !== undefined &&
-        Boolean(req.body.dropboxPathIsAbsolute) !== Boolean(beforeUpdate.dropboxPathIsAbsolute)) ||
-      (req.body.shareFilePathIsAbsolute !== undefined &&
-        Boolean(req.body.shareFilePathIsAbsolute) !== Boolean(beforeUpdate.shareFilePathIsAbsolute)) ||
-      (req.body.name !== undefined && req.body.name.trim() !== beforeUpdate.name);
+      (clientData.dropboxPath !== undefined && clientData.dropboxPath.trim() !== (beforeUpdate.dropboxPath || '')) ||
+      (clientData.shareFilePath !== undefined && clientData.shareFilePath.trim() !== (beforeUpdate.shareFilePath || '')) ||
+      (clientData.dropboxPathIsAbsolute !== undefined &&
+        Boolean(clientData.dropboxPathIsAbsolute) !== Boolean(beforeUpdate.dropboxPathIsAbsolute)) ||
+      (clientData.shareFilePathIsAbsolute !== undefined &&
+        Boolean(clientData.shareFilePathIsAbsolute) !== Boolean(beforeUpdate.shareFilePathIsAbsolute)) ||
+      (clientData.name !== undefined && clientData.name.trim() !== beforeUpdate.name);
 
     if (pathAffectingFieldsChanged) {
       const renameWarnings = await renameClientFolders(beforeUpdate, client);
@@ -295,7 +381,7 @@ exports.updateClient = async (req, res, next) => {
       await client.save();
     }
 
-    if (req.body.matchingRules !== undefined) {
+    if (clientData.matchingRules !== undefined) {
       await syncLegacyRulesForClient(client);
     }
 

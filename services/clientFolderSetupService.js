@@ -2,39 +2,32 @@
 const Client = require('../models/Client');
 const { getSettings } = require('./settingsService');
 const { joinFolderPath, resolveFolderPath } = require('../utils/folderPath');
+const { findClientsSharingFolders, loadFolderIdentitySettings } = require('../utils/clientFolderIdentity');
 const { ensureDropboxFolderExists, renameDropboxFolder } = require('./dropboxService');
 const { ensureShareFileFolderExists, renameShareFileFolder } = require('./sharefileService');
 const { findOrCreateOutlookFolder, renameMailFolder } = require('./graphService');
 const { getAccessTokenFromRefreshToken, isDelegatedConfigAvailable } = require('./delegatedAuthService');
 const { formatError } = require('../utils/formatError');
 
-const normalizePathSegment = (value) => String(value || '').trim().toLowerCase();
-
 
 const checkForPathCollisions = async (client) => {
   const warnings = [];
-  const dropboxSegment = normalizePathSegment(client.dropboxPath || client.name);
-  const shareFileSegment = normalizePathSegment(client.shareFilePath || client.name);
+  const settings = await loadFolderIdentitySettings();
 
   const otherClients = await Client.find({ _id: { $ne: client._id } })
-    .select('name dropboxPath shareFilePath')
+    .select('name dropboxPath dropboxPathIsAbsolute shareFilePath shareFilePathIsAbsolute')
     .lean();
 
-  const dropboxCollision = otherClients.find(
-    (other) => normalizePathSegment(other.dropboxPath || other.name) === dropboxSegment
-  );
-  if (dropboxCollision) {
+  const { dropbox, shareFile } = findClientsSharingFolders(client, otherClients, settings);
+
+  if (dropbox.length > 0) {
     warnings.push(
-      `Dropbox: this path is already used by client "${dropboxCollision.name}" — files from both clients will land in the same folder.`
+      `Dropbox: this path is already used by client "${dropbox[0].name}" — files from both clients will land in the same folder.`
     );
   }
-
-  const shareFileCollision = otherClients.find(
-    (other) => normalizePathSegment(other.shareFilePath || other.name) === shareFileSegment
-  );
-  if (shareFileCollision) {
+  if (shareFile.length > 0) {
     warnings.push(
-      `ShareFile: this path is already used by client "${shareFileCollision.name}" — files from both clients will land in the same folder.`
+      `ShareFile: this path is already used by client "${shareFile[0].name}" — files from both clients will land in the same folder.`
     );
   }
 
