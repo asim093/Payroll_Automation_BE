@@ -22,6 +22,14 @@ const processRunSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    lastIncrementalScanStartedAt: {
+      type: Date,
+      default: null,
+    },
+    lastFullScanAt: {
+      type: Date,
+      default: null,
+    },
   },
   { _id: false }
 );

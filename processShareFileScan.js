@@ -108,6 +108,7 @@ const processShareFileScan = async ({ since } = {}) => {
   }
 
   console.log('\n--- ShareFile scan summary ---');
+  console.log(`Scan mode: ${tree.scanMode} (${tree.scanWindowReason})${tree.incompleteScan ? ' — INCOMPLETE, window not advanced' : ''}`);
   console.log(`Active clients: ${clientsScanned}`);
   console.log(`Folders scanned: ${tree.foldersScanned} (skipped, no recent activity: ${tree.foldersSkippedNoRecentActivity})`);
   console.log(`New files copied for matched clients: ${saved} (failed: ${failed})`);
@@ -133,6 +134,8 @@ const processShareFileScan = async ({ since } = {}) => {
     downloadFailures: tree.downloadFailures,
     pathMismatchFiles: tree.pathMismatchFiles,
     ingestSince: tree.since,
+    scanMode: tree.scanMode,
+    incompleteScan: tree.incompleteScan,
     scanErrors: errors.length,
     scanErrorSample: errors.slice(0, 3).map((entry) => `${entry.scope || 'general'}: ${entry.message}`),
     unmatchedItemsScanned: tree.foldersScanned,

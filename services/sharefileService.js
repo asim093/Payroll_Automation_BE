@@ -7,6 +7,7 @@ const { getSettings } = require('./settingsService');
 const { isShareFilePathIgnored, shareFileFolderAssignClientId } = require('./ignoreRuleService');
 const { resolveFolderPath } = require('../utils/folderPath');
 const { getAccessToken: getShareFileAccessTokenCoordinated } = require('./shareFileTokenManager');
+const { computeScanWindow, recordScanCompleted } = require('./shareFileScanWindow');
 
 const getShareFileAccessTokenViaPassword = async () => {
   const { SHAREFILE_CLIENT_ID, SHAREFILE_CLIENT_SECRET, SHAREFILE_USERNAME, SHAREFILE_PASSWORD, SHAREFILE_SUBDOMAIN } =
@@ -435,11 +436,6 @@ const fetchFileFromShareFile = async (clientFolderSegment, fileName, isAbsolute 
   }
 };
 
-const scanShareFileForNewFiles = async () => {
-  const treeScan = await scanShareFileClientsTree();
-  return treeScan.newFiles;
-};
-
 const recordUnmatchedFile = async (fileItem, path) => {
   if (await isShareFilePathIgnored(path)) {
     return false;
@@ -538,11 +534,6 @@ const scanClientPathForMismatches = async (client, shareFileRootPath, apiBase, a
   return newOrphans;
 };
 
-const DEFAULT_SHAREFILE_INGEST_SINCE = '2026-08-26T00:00:00.000Z';
-const getShareFileIngestSince = () => {
-  const parsed = new Date(process.env.SHAREFILE_INGEST_SINCE_DATE || DEFAULT_SHAREFILE_INGEST_SINCE);
-  return Number.isNaN(parsed.getTime()) ? new Date(DEFAULT_SHAREFILE_INGEST_SINCE) : parsed;
-};
 const INTER_FOLDER_DELAY_MS = 60;
 const SUBFOLDER_SCAN_MAX_DEPTH = 10;
 const MAX_FILES_PER_CLIENT_FOLDER = 8000;
@@ -605,7 +596,14 @@ const buildActiveClientFolderMap = async () => {
   return map;
 };
 
-const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = {}) => {
+const scanShareFileClientsTree = async ({ since: explicitSince, forceFull = false } = {}) => {
+  const scanStartedAt = new Date();
+  const trackWindow = explicitSince === undefined;
+  const scanWindow = trackWindow
+    ? await computeScanWindow({ forceFull })
+    : { since: explicitSince, full: true, reason: 'explicit' };
+  const since = scanWindow.since;
+
   const { shareFileRootPath } = await getSettings();
   let context = await getShareFileContext();
   const { apiBase } = context;
@@ -621,6 +619,9 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
   const errors = [];
   const result = {
     since: since.toISOString(),
+    scanMode: scanWindow.full ? 'full' : 'incremental',
+    scanWindowReason: scanWindow.reason,
+    incompleteScan: false,
     foldersScanned: 0,
     matchedFolders: 0,
     unmatchedFolders: 0,
@@ -695,6 +696,7 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
       const message = `Could not scan "${folderPath}": ${formatError(error)}`;
       console.warn(`  [SHAREFILE SCAN] ${message}`);
       errors.push({ scope: folderPath, message });
+      result.incompleteScan = true;
       continue;
     }
     if (scanState.capped) {
@@ -702,12 +704,14 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
         scope: folderPath,
         message: `"${folderPath}" holds more than ${MAX_FILES_PER_CLIENT_FOLDER} files - only the first ${MAX_FILES_PER_CLIENT_FOLDER} were scanned this cycle.`,
       });
+      result.incompleteScan = true;
     }
     if (scanState.depthLimited) {
       errors.push({
         scope: folderPath,
         message: `"${folderPath}" nests deeper than ${SUBFOLDER_SCAN_MAX_DEPTH} levels - files below that depth were not scanned.`,
       });
+      result.incompleteScan = true;
     }
 
     const treeFiles = scanState.files;
@@ -794,16 +798,17 @@ const scanShareFileClientsTree = async ({ since = getShareFileIngestSince() } = 
     errors.push({ scope: 'path-mismatch', message });
   }
 
-  return result;
-};
+  if (trackWindow) {
+    await recordScanCompleted({
+      startedAt: scanStartedAt,
+      full: scanWindow.full,
+      incomplete: result.incompleteScan,
+    }).catch((error) => {
+      console.error(`  [SHAREFILE SCAN] Could not persist scan-window marker: ${formatError(error)}`);
+    });
+  }
 
-const scanShareFileRootForUnmatchedItems = async () => {
-  const treeScan = await scanShareFileClientsTree();
-  return {
-    scanned: treeScan.foldersScanned,
-    newOrphans: treeScan.unmatchedFilesRecorded + treeScan.pathMismatchFiles,
-    autoResolved: treeScan.autoResolvedFiles,
-  };
+  return result;
 };
 
 const resolveShareFileFolderId = async (fullPath) => {
@@ -950,14 +955,11 @@ module.exports = {
   getLatestFileInShareFileFolder,
   findLatestLogiFormsCsvInShareFile,
   fetchFileFromShareFile,
-  scanShareFileForNewFiles,
   scanShareFileClientsTree,
   ensureShareFileFolderExists,
   renameShareFileFolder,
   deleteShareFileFolder,
   deleteShareFileItemById,
   shareFileFolderChildCount,
-  scanShareFileRootForUnmatchedItems,
   downloadFileContentById,
-  getShareFileIngestSince,
 };
