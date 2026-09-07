@@ -142,10 +142,10 @@ const setupClientFolders = async (client) => {
     );
     if (!result.created) {
       const count = await dropboxFolderContentCount(dropboxSegment, client.dropboxPathIsAbsolute).catch(() => 0);
+      const where = `"${result.path}"`;
+      const contents = count > 0 ? ` (it already has ${count} item${count === 1 ? '' : 's'} in it)` : '';
       notices.push(
-        count > 0
-          ? `A Dropbox folder already exists at "${result.path}" with ${count} item${count === 1 ? '' : 's'} in it. This client's files will go there.`
-          : `A Dropbox folder already exists at "${result.path}". This client's files will go there.`
+        `New clients normally get a Dropbox folder created automatically at client creation. A folder for this client already exists at ${where}${contents}, so it was linked instead of creating a new one. This client's generated reports will be saved there.`
       );
     }
   } catch (error) {
@@ -163,10 +163,10 @@ const setupClientFolders = async (client) => {
     );
     if (!result.created && result.folderId) {
       const count = await shareFileFolderChildCount(result.folderId);
+      const where = `"${resolvedPath}"`;
+      const contents = count > 0 ? ` (it already has ${count} item${count === 1 ? '' : 's'} in it)` : '';
       notices.push(
-        count > 0
-          ? `A ShareFile folder already exists at "${resolvedPath}" with ${count} item${count === 1 ? '' : 's'} in it. This client's files will go there.`
-          : `A ShareFile folder already exists at "${resolvedPath}". This client's files will go there.`
+        `New clients normally get a ShareFile folder created automatically at client creation. A folder for this client already exists at ${where}${contents}, so it was linked instead of creating a new one. Incoming files for this client will be picked up from there.`
       );
     }
   } catch (error) {
