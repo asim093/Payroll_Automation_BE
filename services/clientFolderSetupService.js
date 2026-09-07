@@ -132,6 +132,7 @@ const renameClientFolders = async (previousClient, client) => {
 const setupClientFolders = async (client) => {
   const warnings = await checkForPathCollisions(client);
   const notices = [];
+  const existingFolders = [];
   const { dropboxRootPath, shareFileRootPath, outlookRootPath, outlookClientSubfolder } = await getSettings();
 
   try {
@@ -142,11 +143,7 @@ const setupClientFolders = async (client) => {
     );
     if (!result.created) {
       const count = await dropboxFolderContentCount(dropboxSegment, client.dropboxPathIsAbsolute).catch(() => 0);
-      const where = `"${result.path}"`;
-      const contents = count > 0 ? ` (it already has ${count} item${count === 1 ? '' : 's'} in it)` : '';
-      notices.push(
-        `New clients normally get a Dropbox folder created automatically at client creation. A folder for this client already exists at ${where}${contents}, so it was linked instead of creating a new one. This client's generated reports will be saved there.`
-      );
+      existingFolders.push({ provider: 'Dropbox', path: result.path, count });
     }
   } catch (error) {
     const message = formatError(error);
@@ -163,11 +160,7 @@ const setupClientFolders = async (client) => {
     );
     if (!result.created && result.folderId) {
       const count = await shareFileFolderChildCount(result.folderId);
-      const where = `"${resolvedPath}"`;
-      const contents = count > 0 ? ` (it already has ${count} item${count === 1 ? '' : 's'} in it)` : '';
-      notices.push(
-        `New clients normally get a ShareFile folder created automatically at client creation. A folder for this client already exists at ${where}${contents}, so it was linked instead of creating a new one. Incoming files for this client will be picked up from there.`
-      );
+      existingFolders.push({ provider: 'ShareFile', path: resolvedPath, count: count == null ? 0 : count });
     }
   } catch (error) {
     const message = formatError(error);
@@ -191,6 +184,28 @@ const setupClientFolders = async (client) => {
     }
   } else {
     console.log('  [CLIENT SETUP] Outlook: delegated flow not configured - skipping mail-folder creation.');
+  }
+
+  if (existingFolders.length) {
+    const describe = ({ provider, path, count }) => {
+      const contents = count > 0 ? ` (it already has ${count} item${count === 1 ? '' : 's'} in it)` : '';
+      return `a ${provider} folder already exists at "${path}"${contents}`;
+    };
+    const intro = 'New clients normally get a Dropbox folder and a ShareFile folder created automatically at client creation.';
+    if (existingFolders.length === 1) {
+      const only = existingFolders[0];
+      const direction = only.provider === 'Dropbox'
+        ? 'This client\'s generated reports will be saved there.'
+        : 'Incoming files for this client are picked up from there.';
+      notices.push(
+        `${intro} For this client, ${describe(only)}, so it was linked instead of creating a new one. ${direction}`
+      );
+    } else {
+      const ordered = [...existingFolders].sort((a, b) => a.provider.localeCompare(b.provider));
+      notices.push(
+        `${intro} For this client, ${describe(ordered[0])} and ${describe(ordered[1])}, so they were linked instead of creating new ones. Generated reports will be saved to the Dropbox folder; incoming files are picked up from the ShareFile folder.`
+      );
+    }
   }
 
   return { warnings, notices };
