@@ -49,6 +49,11 @@ const settingsSchema = new mongoose.Schema(
         default: '',
       },
     },
+    complianceReportEmailFromAddress: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     applicantReminderEmailTemplate: {
       subject: {
         type: String,

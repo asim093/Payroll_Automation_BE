@@ -1,8 +1,8 @@
 const {
-  listReminders,
-  previewReminders,
-  actionReminders,
-} = require('../services/applicantReminderService');
+  listCustomerReportEmails,
+  previewCustomerReportEmails,
+  actionCustomerReportEmails,
+} = require('../services/customerReportEmailService');
 
 const requireIds = (req, res) => {
   const { ids } = req.body || {};
@@ -13,34 +13,34 @@ const requireIds = (req, res) => {
   return ids;
 };
 
-exports.getApplicantReminders = async (req, res, next) => {
+exports.getCustomerReportEmails = async (req, res, next) => {
   try {
-    const { clientId, status, sortBy, sortDir } = req.query;
-    const reminders = await listReminders({ clientId, status, sortBy, sortDir });
-    res.status(200).json(reminders);
+    const { clientId, status, search, sortBy, sortDir, page, limit } = req.query;
+    const result = await listCustomerReportEmails({ clientId, status, search, sortBy, sortDir, page, limit });
+    res.status(200).json(result);
   } catch (error) {
     next(error);
   }
 };
 
-exports.previewApplicantReminders = async (req, res, next) => {
+exports.previewCustomerReportEmails = async (req, res, next) => {
   try {
     const ids = requireIds(req, res);
     if (!ids) return;
-    const results = await previewReminders(ids);
+    const results = await previewCustomerReportEmails(ids);
     res.status(200).json(results);
   } catch (error) {
     next(error);
   }
 };
 
-exports.actionApplicantReminders = async (req, res, next) => {
+exports.actionCustomerReportEmails = async (req, res, next) => {
   try {
     const ids = requireIds(req, res);
     if (!ids) return;
     const operatorEmail = req.headers['x-user-email'] || '';
     const mode = req.body?.mode === 'send' ? 'send' : 'draft';
-    const results = await actionReminders(ids, operatorEmail, mode);
+    const results = await actionCustomerReportEmails(ids, operatorEmail, mode);
     res.status(200).json(results);
   } catch (error) {
     next(error);

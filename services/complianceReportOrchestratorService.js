@@ -10,13 +10,33 @@ const { calculateComplianceStatus, summarizeByWeek } = require('./complianceCalc
 const { generateAdminReport, generateClientReport, saveReportToFile } = require('./complianceReportGeneratorService');
 const { createComplianceReportDraft } = require('./complianceEmailDraftService');
 const { upsertFromComplianceRun } = require('./applicantReminderService');
+const { upsertCustomerReportEmailFromRun } = require('./customerReportEmailService');
 const { getSettings } = require('./settingsService');
 const { applyMergeFields } = require('../utils/applyMergeFields');
 const { formatError } = require('../utils/formatError');
 
 const COMPLIANCE_REPORTS_SUBFOLDER = 'Compliance Reports';
+const PAYROLL_FILES_SUFFIX = '/Payroll Files';
 const DEFAULT_SUBJECT_TEMPLATE = 'Compliance Report - {{Client Name}}';
 const DEFAULT_BODY_TEMPLATE = '{{Salutation}}\n\nPlease find attached the compliance report for this period.';
+
+// TEMPORARY (Part 6 of the Customer Emails build-out): keeps the old
+// immediate-Outlook-draft behavior around, fully intact and reachable by
+// flipping this one constant, so it can be compared side-by-side against the
+// new staging-row flow before being deleted for good. Leave this false.
+const USE_LEGACY_DIRECT_DRAFT = false;
+
+// Matches the original VBA source: clients whose dropboxPath points AT their
+// "Payroll Files" folder get reports uploaded as a SIBLING of that folder
+// (.../Payroll Files stripped, then /Compliance Reports appended), not
+// nested inside it. Clients without that suffix (e.g. MSG Staffing, Inc)
+// keep dropboxPath as-is.
+const resolveReportsFolderSegment = (dropboxPath) => {
+  const basePath = dropboxPath.endsWith(PAYROLL_FILES_SUFFIX)
+    ? dropboxPath.slice(0, -PAYROLL_FILES_SUFFIX.length)
+    : dropboxPath;
+  return `${basePath}/${COMPLIANCE_REPORTS_SUBFOLDER}`;
+};
 
 const logFailure = async (clientId, error) => {
   try {
@@ -66,10 +86,10 @@ const generateComplianceReportForClient = async (clientId) => {
     const adminWorkbook = generateAdminReport(client.name, calculatedRecords, weeklyStats);
     const clientWorkbook = generateClientReport(client.name, calculatedRecords, weeklyStats);
 
-    const adminLocalPath = await saveReportToFile(adminWorkbook, tempDir, `Compliance Report ${client.name} (Admin)`);
-    const clientLocalPath = await saveReportToFile(clientWorkbook, tempDir, `Compliance Report ${client.name} (Client)`);
+    const adminLocalPath = await saveReportToFile(adminWorkbook, tempDir, 'Compliance Report Admin');
+    const clientLocalPath = await saveReportToFile(clientWorkbook, tempDir, `Compliance Report ${client.name}`);
 
-    const reportsFolderSegment = `${client.dropboxPath}/${COMPLIANCE_REPORTS_SUBFOLDER}`;
+    const reportsFolderSegment = resolveReportsFolderSegment(client.dropboxPath);
     const uploadedAdminPath = await uploadReportFile(
       reportsFolderSegment,
       path.basename(adminLocalPath),
@@ -83,38 +103,85 @@ const generateComplianceReportForClient = async (clientId) => {
       client.dropboxPathIsAbsolute
     );
 
-    let emailStatus = 'Skipped-No-Email';
-    if (client.complianceReportEmailDistribution) {
-      try {
-        const { complianceReportEmailTemplate } = await getSettings();
-        const subjectTemplate = complianceReportEmailTemplate?.subject?.trim() || DEFAULT_SUBJECT_TEMPLATE;
-        const bodyTemplate = complianceReportEmailTemplate?.body?.trim() || DEFAULT_BODY_TEMPLATE;
-        const mergeValues = {
-          'Client Name': client.name || '',
-          'WOTC Form URL': client.wotcFormUrl || '',
-          'Salutation': client.emailSalutation || '',
-        };
-
-        await createComplianceReportDraft(
-          client.complianceReportEmailDistribution,
-          clientLocalPath,
-          applyMergeFields(subjectTemplate, mergeValues),
-          applyMergeFields(bodyTemplate, mergeValues)
-        );
-        emailStatus = 'Draft-Created';
-      } catch (emailError) {
-        console.error(`[COMPLIANCE-REPORT-ORCHESTRATOR] Draft creation failed for client "${client.name}": ${formatError(emailError)}`);
-        emailStatus = 'Failed';
-      }
-    }
-
     const totalEmployees = calculatedRecords.length;
     const completedCount = calculatedRecords.filter((record) => record.isComplete).length;
     const incompleteCount = totalEmployees - completedCount;
 
+    // The Client-type log is created before the email step (reversed from
+    // the historical order) because the new staging path needs this log's
+    // own _id to link the CustomerReportEmail row back to the exact run it
+    // came from. emailStatus is filled in afterward and saved once known.
+    const generatedAt = new Date();
+    const clientReportLog = await ComplianceReportLog.create({
+      clientId: client._id,
+      generatedAt,
+      reportType: 'Client',
+      filePath: uploadedClientPath,
+      totalEmployees,
+      completedCount,
+      incompleteCount,
+      success: true,
+      // Same weeklyStats array already computed above and passed into both
+      // XLSX builders — persisted on both log types so the drill-down
+      // accordion can show real per-week rows for Client logs too, not just
+      // a Total-only fallback.
+      weeklyBreakdown: weeklyStats,
+    });
+
+    let emailStatus = 'Skipped-No-Email';
+    if (USE_LEGACY_DIRECT_DRAFT) {
+      // ORIGINAL immediate-Outlook-draft path — kept intact (not just
+      // described in a comment) so Part 6 can compare it side-by-side
+      // against the new staging flow before it's deleted for good.
+      // Unreachable while USE_LEGACY_DIRECT_DRAFT is false.
+      if (client.complianceReportEmailDistribution) {
+        try {
+          const { complianceReportEmailTemplate } = await getSettings();
+          const subjectTemplate = complianceReportEmailTemplate?.subject?.trim() || DEFAULT_SUBJECT_TEMPLATE;
+          const bodyTemplate = complianceReportEmailTemplate?.body?.trim() || DEFAULT_BODY_TEMPLATE;
+          const mergeValues = {
+            'Client Name': client.name || '',
+            'WOTC Form URL': client.wotcFormUrl || '',
+            'Salutation': client.emailSalutation || '',
+          };
+
+          await createComplianceReportDraft(
+            client.complianceReportEmailDistribution,
+            clientLocalPath,
+            applyMergeFields(subjectTemplate, mergeValues),
+            applyMergeFields(bodyTemplate, mergeValues)
+          );
+          emailStatus = 'Draft-Created';
+        } catch (emailError) {
+          console.error(`[COMPLIANCE-REPORT-ORCHESTRATOR] Draft creation failed for client "${client.name}": ${formatError(emailError)}`);
+          emailStatus = 'Failed';
+        }
+      }
+    } else {
+      // NEW: stage a CustomerReportEmail row instead of drafting immediately
+      // — an operator reviews and chooses Draft/Send from the Customer
+      // Emails page. emailStatus is derived from the staged row's outcome so
+      // ComplianceReportLog.emailStatus keeps meaning "is there an email
+      // action item for this run" for dashboards, same as before.
+      try {
+        const { row } = await upsertCustomerReportEmailFromRun({
+          client,
+          complianceReportLog: clientReportLog,
+          reportFilePath: uploadedClientPath,
+        });
+        emailStatus = row.status === 'skipped_no_email' ? 'Skipped-No-Email' : 'Draft-Created';
+      } catch (stagingError) {
+        console.error(`[COMPLIANCE-REPORT-ORCHESTRATOR] Customer report email staging failed for client "${client.name}": ${formatError(stagingError)}`);
+        emailStatus = 'Failed';
+      }
+    }
+
+    clientReportLog.emailStatus = emailStatus;
+    await clientReportLog.save();
+
     await ComplianceReportLog.create({
       clientId: client._id,
-      generatedAt: new Date(),
+      generatedAt,
       reportType: 'Admin',
       filePath: uploadedAdminPath,
       totalEmployees,
@@ -123,17 +190,6 @@ const generateComplianceReportForClient = async (clientId) => {
       emailStatus,
       success: true,
       weeklyBreakdown: weeklyStats,
-    });
-    await ComplianceReportLog.create({
-      clientId: client._id,
-      generatedAt: new Date(),
-      reportType: 'Client',
-      filePath: uploadedClientPath,
-      totalEmployees,
-      completedCount,
-      incompleteCount,
-      emailStatus,
-      success: true,
     });
 
     try {

@@ -4,6 +4,7 @@ const {
   createClient,
   getAllClients,
   getClientsWithLastActivity,
+  lookupClients,
   getClientHistory,
   getClientProfile,
   getClientById,
@@ -16,6 +17,7 @@ const {
 
 router.route('/').post(createClient).get(getAllClients);
 router.get('/with-last-activity', getClientsWithLastActivity);
+router.get('/lookup', lookupClients);
 router.get('/:id/history', getClientHistory);
 router.get('/:id/profile', getClientProfile);
 router.get('/:id/payroll-files', getPayrollFiles);

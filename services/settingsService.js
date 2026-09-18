@@ -9,6 +9,7 @@ const DEFAULTS = {
   outlookClientSubfolder: '',
   logiFormsFolderPath: '',
   complianceReportEmailTemplate: { subject: '', body: '' },
+  complianceReportEmailFromAddress: '',
   applicantReminderEmailTemplate: { subject: '', body: '' },
   applicantReminderFromAddress: '',
   mailSyncIntervalMinutes: 5,
@@ -78,6 +79,9 @@ const updateSettings = async (updates) => {
       subject: updates.applicantReminderEmailTemplate.subject ?? '',
       body: updates.applicantReminderEmailTemplate.body ?? '',
     };
+  }
+  if (updates.complianceReportEmailFromAddress !== undefined) {
+    settings.complianceReportEmailFromAddress = updates.complianceReportEmailFromAddress;
   }
   if (updates.applicantReminderFromAddress !== undefined) {
     settings.applicantReminderFromAddress = updates.applicantReminderFromAddress;

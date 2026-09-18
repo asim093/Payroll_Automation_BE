@@ -1,6 +1,8 @@
+const mongoose = require('mongoose');
 const Client = require('../models/Client');
 const EmailLog = require('../models/EmailLog');
 const FileLog = require('../models/FileLog');
+const { paginate } = require('../utils/paginate');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { setupClientFolders, renameClientFolders } = require('../services/clientFolderSetupService');
@@ -182,17 +184,71 @@ exports.getAllClients = async (req, res, next) => {
 };
 
 
+// Minimal, cheap endpoint for client-picker dropdowns/comboboxes: just
+// { _id, name, status }, paginated and searchable by name, so a "Select
+// client" control never has to fetch the whole roster to populate itself.
+// New endpoint, single caller by design, so page/limit aren't optional here
+// the way they are on with-last-activity — a picker is inherently paginated.
+exports.lookupClients = async (req, res, next) => {
+  try {
+    const filter = {};
+    // Resolving a single known _id back to its name — e.g. a ClientPicker
+    // pre-filled from a deep-link's ?clientId= query param — takes priority
+    // over a name search, and neither is expected together.
+    if (req.query.id && mongoose.isValidObjectId(req.query.id)) {
+      filter._id = req.query.id;
+    } else if (req.query.search) {
+      const escaped = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (escaped) filter.name = { $regex: escaped, $options: 'i' };
+    }
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
+    const skip = (page - 1) * limit;
+
+    const [items, total] = await Promise.all([
+      Client.find(filter).select('name status').sort({ name: 1 }).skip(skip).limit(limit).lean(),
+      Client.countDocuments(filter),
+    ]);
+
+    res.status(200).json({ items, total, page, limit });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Query params (all optional, all backward-compatible):
+//   page, limit    - opt in to pagination; omitted -> full array, unchanged
+//   search         - case-insensitive match on name (server-side, so it still
+//                    reaches clients beyond whatever page is currently loaded)
+//   status         - 'active' | 'inactive' filter (server-side, same reason)
+// With no params at all, this returns the exact same plain array, same sort,
+// same shape it always has.
 exports.getClientsWithLastActivity = async (req, res, next) => {
   try {
-    const clients = await Client.find().sort({ name: 1 }).lean();
+    const filter = {};
+    if (req.query.status === 'active' || req.query.status === 'inactive') {
+      filter.status = req.query.status;
+    }
+    if (req.query.search) {
+      const escaped = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (escaped) filter.name = { $regex: escaped, $options: 'i' };
+    }
 
+    const result = await paginate(Client.find(filter).lean(), Client, filter, req.query, {
+      defaultSort: { name: 1 },
+    });
+    const isPaginated = !Array.isArray(result);
+    const clients = isPaginated ? result.items : result;
+
+    const clientIds = clients.map((client) => client._id);
     const [emailActivity, fileActivity] = await Promise.all([
       EmailLog.aggregate([
-        { $match: { matchedClientId: { $ne: null } } },
+        { $match: { matchedClientId: { $in: clientIds } } },
         { $group: { _id: '$matchedClientId', lastAt: { $max: '$receivedAt' } } },
       ]),
       FileLog.aggregate([
-        { $match: { clientId: { $ne: null } } },
+        { $match: { clientId: { $in: clientIds } } },
         { $group: { _id: '$clientId', lastAt: { $max: '$processedAt' } } },
       ]),
     ]);
@@ -214,7 +270,7 @@ exports.getClientsWithLastActivity = async (req, res, next) => {
       return { ...client, lastActivity };
     });
 
-    res.status(200).json(enriched);
+    res.status(200).json(isPaginated ? { ...result, items: enriched } : enriched);
   } catch (error) {
     next(error);
   }

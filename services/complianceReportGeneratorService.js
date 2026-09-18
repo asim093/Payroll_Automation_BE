@@ -12,12 +12,13 @@ const formatDateUTC = (date) => {
 
 const buildComplianceSummarySheet = (worksheet, weeklyStats) => {
   worksheet.columns = [
-    { header: 'Week Ending', key: 'weekEnding', width: 16 },
+    { header: 'W/E Period', key: 'weekEnding', width: 16 },
     { header: 'Total Hires', key: 'totalHires', width: 14 },
     { header: 'Completed', key: 'completed', width: 14 },
     { header: 'Incomplete', key: 'incomplete', width: 14 },
     { header: 'Compliance %', key: 'compliancePercent', width: 16 },
   ];
+  worksheet.getColumn('weekEnding').numFmt = 'mm/dd/yyyy';
 
   let totalHires = 0;
   let totalCompleted = 0;
@@ -25,7 +26,7 @@ const buildComplianceSummarySheet = (worksheet, weeklyStats) => {
 
   for (const week of weeklyStats) {
     worksheet.addRow({
-      weekEnding: formatDateUTC(week.weekEndingDate),
+      weekEnding: week.weekEndingDate || null,
       totalHires: week.total,
       completed: week.completed,
       incomplete: week.incomplete,
@@ -51,7 +52,7 @@ const APPLICATION_COLUMNS_ADMIN = [
   { header: 'Employee Name', key: 'employeeName', width: 22 },
   { header: 'SSN', key: 'ssn', width: 14 },
   { header: 'Email', key: 'email', width: 26 },
-  { header: 'Completed Y/N', key: 'completedYN', width: 14 },
+  { header: 'Completed', key: 'completedYN', width: 14 },
   { header: 'W/E Period', key: 'weekEndingDate', width: 14 },
   { header: 'Status', key: 'status', width: 16 },
   { header: 'Notes', key: 'notes', width: 24 },

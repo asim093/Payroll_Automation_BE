@@ -1,8 +1,15 @@
+const mongoose = require('mongoose');
 const MatchingRule = require('../models/MatchingRule');
 const Client = require('../models/Client');
 const ReviewQueue = require('../models/ReviewQueue');
 const EmailLog = require('../models/EmailLog');
 const { classifyMatchValue, deriveRuleType } = require('../utils/matchValue');
+const { paginate, isPaginationRequested } = require('../utils/paginate');
+
+const toPopulatedShape = (row) => {
+  const { client, ...rest } = row;
+  return { ...rest, clientId: client ? { _id: client._id, name: client.name, status: client.status } : row.clientId };
+};
 
 const VALID_TYPES = ['exact_email', 'domain', 'notification_pattern', 'subject_keyword'];
 const UNIQUE_ACROSS_CLIENTS_TYPES = ['exact_email', 'domain'];
@@ -11,9 +18,6 @@ const PREVIEW_LIMIT = 20;
 
 const normalizeValue = (value) => String(value || '').trim().toLowerCase();
 
-// For a sender rule the value's shape is authoritative: "@acme.com" is a domain,
-// "bob@acme.com" is an exact_email, regardless of the type the caller asked for.
-// Returns { type, value } or { error } for an unrecognisable sender value.
 const resolveRuleTypeAndValue = (requestedType, rawValue) => {
   if (!SENDER_TYPES.includes(requestedType)) {
     return { type: requestedType, value: normalizeValue(rawValue) };
@@ -44,13 +48,52 @@ const doesEmailMatchRule = (email, type, normalizedValue) => {
   }
 };
 
+
 exports.getAllRules = async (req, res, next) => {
   try {
-    const filter = req.query.clientId ? { clientId: req.query.clientId } : {};
-    const rules = await MatchingRule.find(filter)
-      .populate('clientId', 'name status')
-      .sort({ type: 1, createdAt: -1 });
-    res.status(200).json(rules);
+    // Cast explicitly: the plain .find() path below auto-casts via the
+    // schema, but the sortBy=client aggregation path runs this same filter
+    // through a raw $match, which does NOT auto-cast a string against an
+    // ObjectId field and would otherwise match nothing.
+    const filter =
+      req.query.clientId && mongoose.isValidObjectId(req.query.clientId)
+        ? { clientId: new mongoose.Types.ObjectId(req.query.clientId) }
+        : {};
+    const sortDir = req.query.sortDir === 'desc' ? -1 : 1;
+
+ 
+    if (req.query.sortBy === 'client') {
+      const pipeline = [
+        { $match: filter },
+        { $lookup: { from: 'clients', localField: 'clientId', foreignField: '_id', as: 'client' } },
+        { $unwind: { path: '$client', preserveNullAndEmptyArrays: true } },
+        { $sort: { 'client.name': sortDir, createdAt: -1 } },
+      ];
+
+      if (!isPaginationRequested(req.query)) {
+        const rows = await MatchingRule.aggregate(pipeline);
+        return res.status(200).json(rows.map(toPopulatedShape));
+      }
+
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 20));
+      const skip = (page - 1) * limit;
+
+      const [rows, totalResult] = await Promise.all([
+        MatchingRule.aggregate([...pipeline, { $skip: skip }, { $limit: limit }]),
+        MatchingRule.aggregate([...pipeline, { $count: 'total' }]),
+      ]);
+      const total = totalResult[0]?.total || 0;
+      return res.status(200).json({ items: rows.map(toPopulatedShape), total, page, limit });
+    }
+
+    const sortFields = { active: 'active', type: 'type', createdAt: 'createdAt' };
+    const query = MatchingRule.find(filter).populate('clientId', 'name status');
+    const result = await paginate(query, MatchingRule, filter, req.query, {
+      sortFields,
+      defaultSort: { type: 1, createdAt: -1 },
+    });
+    res.status(200).json(result);
   } catch (error) {
     next(error);
   }

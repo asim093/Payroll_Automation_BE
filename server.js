@@ -21,6 +21,11 @@ const activityRoutes = require('./routes/activityRoutes');
 const matchingRuleRoutes = require('./routes/matchingRuleRoutes');
 const ignoreRuleRoutes = require('./routes/ignoreRuleRoutes');
 const applicantReminderRoutes = require('./routes/applicantReminderRoutes');
+const customerReportEmailRoutes = require('./routes/customerReportEmailRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
+const columnMappingRoutes = require('./routes/columnMappingRoutes');
+const complianceStatusRoutes = require('./routes/complianceStatusRoutes');
+const ingestionDraftsRoutes = require('./routes/ingestionDraftsRoutes');
 
 connectDB();
 
@@ -43,6 +48,11 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/matching-rules', matchingRuleRoutes);
 app.use('/api/ignore-rules', ignoreRuleRoutes);
 app.use('/api/applicant-reminders', applicantReminderRoutes);
+app.use('/api/customer-report-emails', customerReportEmailRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/column-mappings', columnMappingRoutes);
+app.use('/api/compliance-statuses', complianceStatusRoutes);
+app.use('/api/ingestion-drafts', ingestionDraftsRoutes);
 
 app.use('/internal', internalRoutes);
 
@@ -95,3 +105,4 @@ initSocket(httpServer);
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT} (HTTP + WebSocket)`);
 });
+

@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const REMINDER_STATUSES = [
   'pending',
   'draft_created',
+  'sent',
   'skipped_no_email',
   'skipped_no_form_url',
   'failed',
@@ -61,7 +62,7 @@ const applicantReminderSchema = new mongoose.Schema(
     },
     reminderMode: {
       type: String,
-      enum: ['draft'],
+      enum: ['draft', 'send'],
       default: 'draft',
     },
     reminderActionedAt: {
