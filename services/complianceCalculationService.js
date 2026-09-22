@@ -15,10 +15,25 @@ const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
 const normalizeStatusValue = (value) => String(value ?? '').trim().toLowerCase();
 
+// Resolves duplicate SSNs by explicit MAX(DateSubmitted), not by "whichever
+// row happens to be last in the array" — real LogiForms exports commonly
+// have the same person submit multiple times (same status or a status
+// change), and only the most recent submission's status is the confirmed
+// business rule. This is order-independent: it doesn't matter what order
+// logiFormsData arrives in. Rows with no parseable DateSubmitted (entryTime
+// -Infinity) are only ever picked when nothing else exists for that SSN, so
+// a genuinely-dated row always outranks one that failed to parse.
 const calculateComplianceStatus = async (payrollRecords, logiFormsData) => {
   const logiFormsBySsn = new Map();
   for (const entry of logiFormsData || []) {
-    logiFormsBySsn.set(normalizeSsn(entry.ssn), entry.status);
+    const ssn = normalizeSsn(entry.ssn);
+    const entryTime = entry.dateSubmitted instanceof Date && !Number.isNaN(entry.dateSubmitted.getTime())
+      ? entry.dateSubmitted.getTime()
+      : -Infinity;
+    const existing = logiFormsBySsn.get(ssn);
+    if (!existing || entryTime >= existing.dateSubmittedTime) {
+      logiFormsBySsn.set(ssn, { status: entry.status, dateSubmittedTime: entryTime });
+    }
   }
 
   const complianceStatuses = await ComplianceStatus.find().lean();
@@ -27,7 +42,7 @@ const calculateComplianceStatus = async (payrollRecords, logiFormsData) => {
   );
 
   return payrollRecords.map((record) => {
-    const matchedStatus = logiFormsBySsn.get(normalizeSsn(record.ssn));
+    const matchedStatus = logiFormsBySsn.get(normalizeSsn(record.ssn))?.status;
 
     const status = matchedStatus || 'Incomplete';
     const isComplete = matchedStatus ? completeStatusValues.has(normalizeStatusValue(matchedStatus)) : false;

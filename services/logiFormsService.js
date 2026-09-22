@@ -1,10 +1,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const XLSX = require('xlsx');
+const { parse } = require('csv-parse');
 const { getSettings } = require('./settingsService');
 const { findLatestLogiFormsCsvInShareFile, downloadFileContentById } = require('./sharefileService');
-const { parseDateValue } = require('./payrollFileParserService');
 
 const EXPECTED_HEADERS = {
   dateSubmitted: 'DateSubmitted',
@@ -17,66 +16,142 @@ const normalizeHeader = (header) => String(header ?? '').trim().toLowerCase();
 const normalizeFein = (value) => String(value ?? '').replace(/[^0-9]/g, '');
 const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
-// Parses every valid row in the file regardless of EIN, each keeping its own
-// normalized ein — the basis for both parseLogiFormsCsv (single-FEIN,
-// existing per-client contract, untouched) and fetchAllLogiFormsRecords
-// (whole-file, fetched once per generation batch instead of once per client).
-const readAllLogiFormsRows = (localFilePath) => {
-  if (!fs.existsSync(localFilePath)) {
-    throw new Error(`LogiForms file not found: ${localFilePath}`);
+// DateSubmitted needs real sub-day precision — unlike hire dates/week-ending
+// dates elsewhere in the app (calendar-only by design), same-day/same-minute
+// duplicate LogiForms submissions for the same SSN are common in real data,
+// and calculateComplianceStatus's duplicate-SSN resolution depends on being
+// able to tell which submission actually happened last. Real production
+// exports use "M/D/YY H:MM:SS AM/PM" (e.g. "5/1/25 12:08:00 AM") — parsed
+// explicitly here rather than via the shared parseDateValue/
+// normalizeToUtcCalendarDate (which truncates to midnight on purpose) or via
+// a bare `new Date(string)` on this exact format, since non-ISO string
+// parsing is implementation-defined by spec.
+const DATE_SUBMITTED_PATTERN = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)$/i;
+const EXCEL_EPOCH_UTC_MS = Date.UTC(1899, 11, 30);
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const parseDateSubmittedTimestamp = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
   }
 
-  const workbook = XLSX.readFile(localFilePath);
-  const firstSheetName = workbook.SheetNames[0];
-  if (!firstSheetName) {
-    throw new Error(`LogiForms file has no sheets: ${localFilePath}`);
+  if (typeof value === 'number') {
+    // Excel serial date-time (whole + fractional day) — only reachable if a
+    // real spreadsheet-typed cell ever slips in; not expected for a plain
+    // .csv, which is what production actually uses (confirmed directly).
+    if (!Number.isFinite(value)) return null;
+    const date = new Date(EXCEL_EPOCH_UTC_MS + value * MS_PER_DAY);
+    return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], {
-    header: 1,
-    defval: null,
-    raw: true,
-  });
-  if (rows.length === 0) {
-    throw new Error(`LogiForms file is empty: ${localFilePath}`);
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(DATE_SUBMITTED_PATTERN);
+  if (match) {
+    const [, monthStr, dayStr, yearStr, hourStr, minuteStr, secondStr, meridiem] = match;
+    const year = yearStr.length === 2 ? Number(yearStr) + 2000 : Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    let hour = Number(hourStr) % 12;
+    if (meridiem.toUpperCase() === 'PM') hour += 12;
+    const minute = Number(minuteStr);
+    const second = Number(secondStr);
+    const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  const normalizedFileHeaders = rows[0].map((header) => normalizeHeader(header));
-
-  const columnIndex = {};
-  for (const [field, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
-    const index = normalizedFileHeaders.indexOf(normalizeHeader(expectedHeader));
-    if (index === -1) {
-      throw new Error(`LogiForms file is missing required column "${expectedHeader}": ${localFilePath}`);
-    }
-    columnIndex[field] = index;
-  }
-
-  const records = [];
-  for (const rawRow of rows.slice(1)) {
-    const ein = normalizeFein(rawRow[columnIndex.ein]);
-    const dateSubmitted = parseDateValue(rawRow[columnIndex.dateSubmitted]);
-    const ssn = normalizeSsn(rawRow[columnIndex.ssn]);
-    const rawStatus = rawRow[columnIndex.status];
-    const status = rawStatus === null || rawStatus === undefined ? '' : String(rawStatus).trim();
-
-    if (!dateSubmitted || !ssn || !status) continue;
-
-    records.push({ dateSubmitted, ssn, status, ein });
-  }
-
-  records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
-  return records;
+  // Fallback for any other format (e.g. an ISO datetime string) — only
+  // reached when the known real format above didn't match.
+  const fallback = new Date(trimmed);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
 };
+
+// Streaming, row-by-row read — never materializes the whole file as an
+// in-memory object graph (the old XLSX.readFile + sheet_to_json path did
+// exactly that, which is what made 750K-row files take 25+ minutes and
+// balloon to 2GB+ RSS; see the investigation this replaces). Duplicate-key
+// (EIN, SSN) resolution happens INCREMENTALLY during the stream — a Map is
+// updated in place, keeping only the current best (max DateSubmitted) row
+// per key — so peak memory is proportional to the number of unique
+// (EIN, SSN) pairs, not the total row count. Keyed on EIN+SSN together
+// (not SSN alone) because the same person can legitimately submit under
+// different employers; those are different applications, not duplicates of
+// each other, and must not be collapsed into one.
+const readAllLogiFormsRows = (localFilePath) =>
+  new Promise((resolve, reject) => {
+    if (!fs.existsSync(localFilePath)) {
+      reject(new Error(`LogiForms file not found: ${localFilePath}`));
+      return;
+    }
+
+    const bestByKey = new Map();
+    let sawAnyRow = false;
+    let headersChecked = false;
+
+    const parser = fs.createReadStream(localFilePath).pipe(
+      parse({
+        bom: true,
+        skip_empty_lines: true,
+        relax_column_count: true,
+        columns: (headerRow) => headerRow.map((header) => normalizeHeader(header)),
+      })
+    );
+
+    parser.on('data', (row) => {
+      sawAnyRow = true;
+      if (!headersChecked) {
+        headersChecked = true;
+        for (const [, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
+          if (!(normalizeHeader(expectedHeader) in row)) {
+            parser.destroy(new Error(`LogiForms file is missing required column "${expectedHeader}": ${localFilePath}`));
+            return;
+          }
+        }
+      }
+
+      const ein = normalizeFein(row[normalizeHeader(EXPECTED_HEADERS.ein)]);
+      const dateSubmitted = parseDateSubmittedTimestamp(row[normalizeHeader(EXPECTED_HEADERS.dateSubmitted)]);
+      const ssn = normalizeSsn(row[normalizeHeader(EXPECTED_HEADERS.ssn)]);
+      const rawStatus = row[normalizeHeader(EXPECTED_HEADERS.status)];
+      const status = rawStatus === null || rawStatus === undefined ? '' : String(rawStatus).trim();
+
+      if (!dateSubmitted || !ssn || !status) return;
+
+      const key = `${ein}:${ssn}`;
+      const existing = bestByKey.get(key);
+      if (!existing || dateSubmitted.getTime() >= existing.dateSubmitted.getTime()) {
+        bestByKey.set(key, { dateSubmitted, ssn, status, ein });
+      }
+    });
+
+    parser.on('error', (error) => reject(error));
+
+    parser.on('end', () => {
+      if (!sawAnyRow) {
+        reject(new Error(`LogiForms file is empty: ${localFilePath}`));
+        return;
+      }
+      // Sort kept purely to preserve the existing "sorted desc" output
+      // contract (testLogiFormsIntegration.js asserts this) — correctness no
+      // longer depends on it, since duplicates are already resolved above.
+      const records = Array.from(bestByKey.values());
+      records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
+      resolve(records);
+    });
+  });
 
 // Existing per-client contract — unchanged return shape (ein on each record
 // is the normalized TARGET fein, not necessarily the row's own, matching the
-// original behavior relied on by testLogiFormsIntegration.js).
-const parseLogiFormsCsv = (localFilePath, fein) => {
+// original behavior relied on by testLogiFormsIntegration.js). Now async
+// (the streaming read underneath it is inherently asynchronous); every
+// caller already awaits or returns this from an async function.
+const parseLogiFormsCsv = async (localFilePath, fein) => {
   const normalizedFein = normalizeFein(fein);
-  return readAllLogiFormsRows(localFilePath)
-    .filter((record) => record.ein === normalizedFein)
-    .map((record) => ({ ...record, ein: normalizedFein }));
+  const allRecords = await readAllLogiFormsRows(localFilePath);
+  return allRecords.filter((record) => record.ein === normalizedFein).map((record) => ({ ...record, ein: normalizedFein }));
 };
 
 // Pure in-memory filter, reusing rows already fetched once for a whole batch
@@ -103,7 +178,12 @@ const fetchLogiFormsDataForClient = async (fein) => {
   try {
     const content = await downloadFileContentById(latestFile.fileId);
     fs.writeFileSync(localFilePath, content);
-    return parseLogiFormsCsv(localFilePath, fein);
+    // Explicitly awaited (not just `return parseLogiFormsCsv(...)`) — now
+    // that parsing streams the file asynchronously, an un-awaited return
+    // would let `finally` delete tempDir out from under the still-reading
+    // stream, since `finally` runs as soon as control leaves the try block,
+    // not once the returned promise settles.
+    return await parseLogiFormsCsv(localFilePath, fein);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -131,7 +211,10 @@ const fetchAllLogiFormsRecords = async () => {
   try {
     const content = await downloadFileContentById(latestFile.fileId);
     fs.writeFileSync(localFilePath, content);
-    return readAllLogiFormsRows(localFilePath);
+    // Explicitly awaited — see the same note in fetchLogiFormsDataForClient:
+    // an un-awaited return here would let `finally` delete tempDir before
+    // the streaming read finishes with it.
+    return await readAllLogiFormsRows(localFilePath);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

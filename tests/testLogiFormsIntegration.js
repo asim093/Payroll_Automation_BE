@@ -35,8 +35,8 @@ const run = async () => {
     fs.writeFileSync(csvPath, CSV_CONTENT);
 
     console.log('=== TEST 1: parseLogiFormsCsv filters by FEIN, drops incomplete rows, strips SSN dashes, sorts desc ===');
-    const dashlessRecords = parseLogiFormsCsv(csvPath, '123456789');
-    const dashedRecords = parseLogiFormsCsv(csvPath, '12-3456789');
+    const dashlessRecords = await parseLogiFormsCsv(csvPath, '123456789');
+    const dashedRecords = await parseLogiFormsCsv(csvPath, '12-3456789');
     console.log('Records for FEIN 12-3456789:', JSON.stringify(dashlessRecords, null, 2));
 
     check('Returned exactly 4 records (5 valid rows minus 3 dropped for missing fields, 1 excluded by EIN)', dashlessRecords.length === 4);
