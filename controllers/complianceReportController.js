@@ -3,10 +3,86 @@ const mongoose = require('mongoose');
 const XLSX = require('xlsx');
 const Client = require('../models/Client');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
-const { generateComplianceReportForClient } = require('../services/complianceReportOrchestratorService');
+const CustomerReportEmail = require('../models/CustomerReportEmail');
+const ApplicantReminder = require('../models/ApplicantReminder');
+const { generateComplianceReportsForMultipleClients } = require('../services/complianceReportOrchestratorService');
 const { downloadDropboxFileBuffer } = require('../services/dropboxService');
 const { paginate, isPaginationRequested } = require('../utils/paginate');
 const { createJob, getJob, recordResult } = require('../services/complianceReportGenerationJobs');
+
+// A run's period isn't stored as its own field — it's derived from the
+// min/max weekEndingDate already present in weeklyBreakdown, so there's no
+// second source of truth to keep in sync with it.
+const derivePeriod = (weeklyBreakdown) => {
+  const timestamps = (weeklyBreakdown || [])
+    .map((week) => week.weekEndingDate)
+    .filter(Boolean)
+    .map((date) => new Date(date).getTime())
+    .filter((time) => Number.isFinite(time));
+  if (timestamps.length === 0) return null;
+  return { start: new Date(Math.min(...timestamps)), end: new Date(Math.max(...timestamps)) };
+};
+
+// "sent" is a run's aggregate bucket, not a literal status value: a draft
+// that's been created counts as sent for tracking purposes even though the
+// row's own status stays 'draft_created' (that row-level distinction is
+// still useful elsewhere — re-draftability, dry-run tracking — so it's kept,
+// just folded into this one bucket for run-summary counts).
+const SENT_BUCKET_STATUSES = ['draft_created', 'sent'];
+const bucketRunCounts = (statusCounts) => ({
+  sent: SENT_BUCKET_STATUSES.reduce((sum, status) => sum + (statusCounts[status] || 0), 0),
+  dismissed: statusCounts.dismissed || 0,
+  failed: statusCounts.failed || 0,
+  pending: statusCounts.pending || 0,
+});
+
+// Computed on demand every call — deliberately never cached/stored on the
+// run itself, so these counts can never drift stale relative to the actual
+// CustomerReportEmail/ApplicantReminder rows they summarize.
+const attachRunCounts = async (rows) => {
+  const clientLogIds = rows.map((row) => row.clientLogId).filter(Boolean);
+  const adminLogIds = rows.map((row) => row.adminLogId).filter(Boolean);
+
+  const [emailStatusRows, reminderStatusRows] = await Promise.all([
+    clientLogIds.length
+      ? CustomerReportEmail.aggregate([
+          { $match: { complianceReportLogId: { $in: clientLogIds } } },
+          { $group: { _id: { logId: '$complianceReportLogId', status: '$status' }, count: { $sum: 1 } } },
+        ])
+      : [],
+    adminLogIds.length
+      ? ApplicantReminder.aggregate([
+          { $match: { lastComplianceReportLogId: { $in: adminLogIds } } },
+          { $group: { _id: { logId: '$lastComplianceReportLogId', status: '$reminderStatus' }, count: { $sum: 1 } } },
+        ])
+      : [],
+  ]);
+
+  const emailCountsByLogId = new Map();
+  for (const entry of emailStatusRows) {
+    const key = String(entry._id.logId);
+    if (!emailCountsByLogId.has(key)) emailCountsByLogId.set(key, {});
+    emailCountsByLogId.get(key)[entry._id.status] = entry.count;
+  }
+  const reminderCountsByLogId = new Map();
+  for (const entry of reminderStatusRows) {
+    const key = String(entry._id.logId);
+    if (!reminderCountsByLogId.has(key)) reminderCountsByLogId.set(key, {});
+    reminderCountsByLogId.get(key)[entry._id.status] = entry.count;
+  }
+
+  return rows.map((row) => {
+    const { weeklyBreakdown, ...rest } = row;
+    return {
+      ...rest,
+      period: derivePeriod(weeklyBreakdown),
+      counts: {
+        clientEmails: bucketRunCounts((row.clientLogId && emailCountsByLogId.get(String(row.clientLogId))) || {}),
+        applicantReminders: bucketRunCounts((row.adminLogId && reminderCountsByLogId.get(String(row.adminLogId))) || {}),
+      },
+    };
+  });
+};
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -35,17 +111,18 @@ const generateReports = async (req, res) => {
   const jobId = createJob(clientIds);
   res.json({ success: true, jobId });
 
-  (async () => {
-    for (const clientId of clientIds) {
-      try {
-        const result = await generateComplianceReportForClient(clientId);
-        recordResult(jobId, result);
-      } catch (error) {
-        console.error(`[COMPLIANCE-REPORTS] generateComplianceReportForClient rejected unexpectedly for ${clientId}: ${error.message}`);
-        recordResult(jobId, { success: false, clientId, error: error.message });
-      }
+  generateComplianceReportsForMultipleClients(clientIds, {
+    onResult: (result) => recordResult(jobId, result),
+  }).catch((error) => {
+    console.error(`[COMPLIANCE-REPORTS] generateComplianceReportsForMultipleClients rejected unexpectedly: ${error.message}`);
+    // Whatever didn't get an onResult callback yet still needs the job to
+    // reach "done" instead of hanging forever on the frontend's poll.
+    const job = getJob(jobId);
+    const alreadyReported = job ? job.completed : 0;
+    for (let i = alreadyReported; i < clientIds.length; i += 1) {
+      recordResult(jobId, { success: false, clientId: clientIds[i], error: error.message });
     }
-  })();
+  });
 };
 
 const getGenerateReportsStatus = (req, res) => {
@@ -166,6 +243,17 @@ const getComplianceReportHistory = async (req, res, next) => {
     }
     if (req.query.success === 'true') filter.success = true;
     else if (req.query.success === 'false') filter.success = false;
+    // emailStatus (History page filter): 'failed' means the report itself
+    // never generated (no emails exist at all); 'pending'/'success' both
+    // imply the run generated fine, so they narrow to success:true here and
+    // get split further below (in-memory, after counts are attached — an
+    // applicant's email-completion state isn't a field on ComplianceReportLog
+    // itself, so it can't be expressed as a $match on this collection alone).
+    const emailStatusFilter = ['pending', 'success', 'failed'].includes(req.query.emailStatus)
+      ? req.query.emailStatus
+      : null;
+    if (emailStatusFilter === 'failed') filter.success = false;
+    else if (emailStatusFilter === 'pending' || emailStatusFilter === 'success') filter.success = true;
     if (req.query.dateFrom || req.query.dateTo) {
       filter.generatedAt = {};
       if (req.query.dateFrom) filter.generatedAt.$gte = new Date(req.query.dateFrom);
@@ -207,6 +295,9 @@ const getComplianceReportHistory = async (req, res, next) => {
             totalEmployees: { $first: '$totalEmployees' },
             completedCount: { $first: '$completedCount' },
             incompleteCount: { $first: '$incompleteCount' },
+            sourcePayrollFileName: { $first: '$sourcePayrollFileName' },
+            sourcePayrollFilePath: { $first: '$sourcePayrollFilePath' },
+            weeklyBreakdown: { $first: '$weeklyBreakdown' },
             logs: { $push: { _id: '$_id', reportType: '$reportType' } },
           },
         },
@@ -231,15 +322,42 @@ const getComplianceReportHistory = async (req, res, next) => {
             totalEmployees: 1,
             completedCount: 1,
             incompleteCount: 1,
+            sourcePayrollFileName: 1,
+            sourcePayrollFilePath: 1,
+            weeklyBreakdown: 1,
             adminLogId: '$adminLog._id',
             clientLogId: '$clientLog._id',
           },
         },
       ];
 
+      // pending/success can't be resolved by the DB query alone (see above),
+      // so this branch fetches every success:true row matching the other
+      // filters, attaches counts, splits by whether any applicant email is
+      // still pending, and paginates the resulting in-memory list — a real
+      // cost, but only paid when this specific filter is in use, and this
+      // page's dataset (compliance runs, not applicants) stays small enough
+      // for that to be fine.
+      if (emailStatusFilter === 'pending' || emailStatusFilter === 'success') {
+        const allRows = await ComplianceReportLog.aggregate(pipeline);
+        const withCounts = await attachRunCounts(allRows);
+        const matches = withCounts.filter((row) => {
+          const isPending = (row.counts.applicantReminders.pending || 0) > 0;
+          return emailStatusFilter === 'pending' ? isPending : !isPending;
+        });
+
+        if (!isPaginationRequested(req.query)) {
+          return res.status(200).json(matches);
+        }
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 20));
+        const start = (page - 1) * limit;
+        return res.status(200).json({ items: matches.slice(start, start + limit), total: matches.length, page, limit });
+      }
+
       if (!isPaginationRequested(req.query)) {
         const rows = await ComplianceReportLog.aggregate(pipeline);
-        return res.status(200).json(rows);
+        return res.status(200).json(await attachRunCounts(rows));
       }
 
       const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -255,7 +373,7 @@ const getComplianceReportHistory = async (req, res, next) => {
         ]),
       ]);
       const total = totalResult[0]?.total || 0;
-      return res.status(200).json({ items: rows, total, page, limit });
+      return res.status(200).json({ items: await attachRunCounts(rows), total, page, limit });
     }
 
     // Sorting by the client's name means sorting by a field on the referenced

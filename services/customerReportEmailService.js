@@ -57,7 +57,26 @@ const listCustomerReportEmails = async (query = {}) => {
   if (query.clientId && mongoose.isValidObjectId(query.clientId)) {
     filter.clientId = new mongoose.Types.ObjectId(query.clientId);
   }
+  // 'all'/unset means "everything except dismissed" — a dismissed row is a
+  // soft-delete out of the working view, only visible by explicitly asking
+  // for status: 'dismissed' (the dedicated Dismissed tab).
   if (query.status && query.status !== 'all') filter.status = query.status;
+  else filter.status = { $ne: 'dismissed' };
+  // Scopes to one or more historical runs (the "View Emails" screen reached
+  // from History — a single row's own link, or several checkbox-selected
+  // rows at once) — complianceReportLogId is already the exact field this
+  // model links each row to (see upsertCustomerReportEmailFromRun). Accepts
+  // either one id or a comma-separated list.
+  const logIds = String(query.complianceReportLogId || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => mongoose.isValidObjectId(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+  if (logIds.length === 1) {
+    filter.complianceReportLogId = logIds[0];
+  } else if (logIds.length > 1) {
+    filter.complianceReportLogId = { $in: logIds };
+  }
 
   // Search box on the Customer Emails page: matches either the customer
   // email address directly, or the client's name (via a small pre-lookup,
@@ -119,9 +138,53 @@ const loadActionableRow = async (id) => {
   if (row.status === 'draft_created') return { row, result: { id, status: 'already_draft_created' } };
   if (row.status === 'skipped_no_email') return { row, result: { id, status: 'skipped_no_email' } };
   if (row.status === 'superseded') return { row, result: { id, status: 'superseded' } };
+  if (row.status === 'dismissed') return { row, result: { id, status: 'dismissed' } };
   const client = await require('../models/Client').findById(row.clientId);
   if (!client) return { row, result: { id, status: 'client_not_found' } };
   return { row, client };
+};
+
+const dismissCustomerReportEmails = async (ids, operatorEmail) => {
+  const results = [];
+  for (const id of ids || []) {
+    const row = await CustomerReportEmail.findById(id);
+    if (!row) {
+      results.push({ id, status: 'not_found' });
+      continue;
+    }
+    if (row.status === 'sent') {
+      results.push({ id, status: 'already_sent' });
+      continue;
+    }
+    row.status = 'dismissed';
+    row.actionedAt = new Date();
+    row.actionedBy = operatorEmail || '';
+    row.errorMessage = undefined;
+    await row.save();
+    results.push({ id, status: 'dismissed' });
+  }
+  return results;
+};
+
+const undismissCustomerReportEmails = async (ids) => {
+  const results = [];
+  for (const id of ids || []) {
+    const row = await CustomerReportEmail.findById(id);
+    if (!row) {
+      results.push({ id, status: 'not_found' });
+      continue;
+    }
+    if (row.status !== 'dismissed') {
+      results.push({ id, status: 'not_dismissed' });
+      continue;
+    }
+    row.status = 'pending';
+    row.actionedAt = undefined;
+    row.actionedBy = '';
+    await row.save();
+    results.push({ id, status: 'pending' });
+  }
+  return results;
 };
 
 const buildPreviewOrPayload = async ({ row, client }) => {
@@ -146,7 +209,10 @@ const previewCustomerReportEmails = async (ids) => {
   return results;
 };
 
-const actionCustomerReportEmails = async (ids, operatorEmail, mode = 'draft') => {
+// onResult (optional): fired synchronously after each id finishes, so a
+// caller running this in the background (see customerReportEmailJobService)
+// can report live per-item progress without waiting for the whole batch.
+const actionCustomerReportEmails = async (ids, operatorEmail, mode = 'draft', onResult) => {
   const { createCustomerReportEmail, COMPLIANCE_EMAIL_SEND_ENABLED } = require('./customerEmailDraftService');
 
   if (mode === 'send' && COMPLIANCE_EMAIL_SEND_ENABLED !== true) {
@@ -158,16 +224,20 @@ const actionCustomerReportEmails = async (ids, operatorEmail, mode = 'draft') =>
   }
 
   const results = [];
+  const record = (result) => {
+    results.push(result);
+    if (onResult) onResult(result);
+  };
 
   for (const id of ids || []) {
     const { row, client, result } = await loadActionableRow(id);
     if (result) {
-      results.push(result);
+      record(result);
       continue;
     }
 
     if (!row.reportFilePath) {
-      results.push({ id, status: 'failed', error: 'No report file recorded for this row.' });
+      record({ id, status: 'failed', error: 'No report file recorded for this row.' });
       continue;
     }
 
@@ -184,13 +254,13 @@ const actionCustomerReportEmails = async (ids, operatorEmail, mode = 'draft') =>
       row.actionedBy = operatorEmail || '';
       row.errorMessage = undefined;
       await row.save();
-      results.push({ id, status: row.status, dryRun: row.dryRun, payloadPreview: outcome.payloadPreview });
+      record({ id, status: row.status, dryRun: row.dryRun, payloadPreview: outcome.payloadPreview });
     } catch (error) {
       row.status = 'failed';
       if (error.graphMessageId) row.graphMessageId = error.graphMessageId;
       row.errorMessage = error.message;
       await row.save();
-      results.push({ id, status: 'failed', error: error.message, graphMessageId: error.graphMessageId || null });
+      record({ id, status: 'failed', error: error.message, graphMessageId: error.graphMessageId || null });
     }
   }
 
@@ -202,4 +272,6 @@ module.exports = {
   listCustomerReportEmails,
   previewCustomerReportEmails,
   actionCustomerReportEmails,
+  dismissCustomerReportEmails,
+  undismissCustomerReportEmails,
 };

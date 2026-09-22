@@ -1,4 +1,8 @@
 require('dotenv').config();
+// Force dry-run regardless of the real .env's live-drafting switch — this
+// regression test must never attempt a real Graph call, even after
+// REMINDER_DRAFT_LIVE_ENABLED=true is set for the actual running app.
+process.env.REMINDER_DRAFT_LIVE_ENABLED = 'false';
 
 let PASS = 0;
 let FAIL = 0;
@@ -27,12 +31,11 @@ const run = async () => {
   try {
     check('REMINDER_SEND_ENABLED is hardcoded false', REMINDER_SEND_ENABLED === false, String(REMINDER_SEND_ENABLED));
 
-    // isDryRun() has exactly one gate now: REMINDER_SEND_ENABLED. There used
-    // to be a second env-var gate (REMINDER_DRAFTS_DRY_RUN); it was removed
-    // as unnecessary complexity — REMINDER_SEND_ENABLED alone now decides
-    // both mode='draft' (dry-run log vs real Graph draft) and mode='send'
-    // (blocked vs real send).
-    check('isDryRun() is true while REMINDER_SEND_ENABLED is false', isDryRun() === true);
+    // isDryRun() is gated by REMINDER_DRAFT_LIVE_ENABLED (env-configurable,
+    // forced to 'false' above for this test), independent of
+    // REMINDER_SEND_ENABLED — that second, always-hardcoded-false constant
+    // gates mode='send' only (blocked vs real send), checked separately below.
+    check('isDryRun() is true while REMINDER_DRAFT_LIVE_ENABLED is forced false', isDryRun() === true);
 
     const r1 = await createReminderDraft(payload);
     check('default mode -> createReminderDraft returns dryRun:true', r1.dryRun === true, JSON.stringify(r1));

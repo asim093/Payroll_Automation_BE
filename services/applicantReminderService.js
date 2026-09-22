@@ -5,13 +5,17 @@ const ApplicantReminder = require('../models/ApplicantReminder');
 
 const RESETTABLE_STATUSES = ['pending', 'failed', 'skipped_no_email', 'skipped_no_form_url', 'superseded'];
 const SUPERSEDABLE_STATUSES = ['pending', 'failed', 'skipped_no_email', 'skipped_no_form_url'];
-// A reminder that was actually acted on — either drafted or really sent —
-// is held as-is on future compliance runs and can never be re-actioned.
-// 'sent' must be included here for the same reason 'draft_created' already
-// was: letting it fall through to RESETTABLE/SUPERSEDABLE would reopen an
-// already-sent reminder, and once real sending goes live that means a
-// duplicate real email.
-const ALREADY_ACTIONED_STATUSES = ['draft_created', 'sent'];
+// A reminder that was actually acted on — either drafted, really sent, or
+// deliberately dismissed by an operator — is held as-is on future compliance
+// runs and can never be silently re-actioned or reset. 'sent' must be
+// included here for the same reason 'draft_created' already was: letting it
+// fall through to RESETTABLE/SUPERSEDABLE would reopen an already-sent
+// reminder, and once real sending goes live that means a duplicate real
+// email. 'dismissed' is included for the same reason — a compliance run
+// re-detecting the same still-incomplete employee should not silently
+// un-dismiss an operator's explicit "don't send this" decision; only the
+// Undismiss action should do that.
+const ALREADY_ACTIONED_STATUSES = ['draft_created', 'sent', 'dismissed'];
 
 const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
@@ -20,7 +24,14 @@ const hashSsn = (normalizedSsn) => crypto.createHash('sha256').update(normalized
 const incompleteKindOf = (record) =>
   record.status === 'Incomplete' ? 'no_logiforms_record' : 'unrecognized_status';
 
-const upsertFromComplianceRun = async (clientId, complianceRunAt, calculatedRecords) => {
+// complianceReportLogId (optional, 4th param): the Admin-type
+// ComplianceReportLog._id for this specific run — stamped onto every row
+// this call touches (create/refresh/hold) as lastComplianceReportLogId, an
+// exact link for "which reminders belong to this run" rather than fuzzy
+// complianceRunAt timestamp matching, which is unreliable once multiple
+// clients' runs interleave under bounded concurrency. Optional so existing
+// callers/tests that don't have a log id yet keep working unchanged.
+const upsertFromComplianceRun = async (clientId, complianceRunAt, calculatedRecords, complianceReportLogId) => {
   const incomplete = (calculatedRecords || []).filter((record) => !record.isComplete);
 
   const seenHashes = [];
@@ -41,6 +52,7 @@ const upsertFromComplianceRun = async (clientId, complianceRunAt, calculatedReco
 
     const fields = {
       complianceRunAt,
+      lastComplianceReportLogId: complianceReportLogId,
       employeeName: record.employeeName || '',
       employeeSsnLast4: normalizedSsn.slice(-4),
       employeeEmail: record.email || '',
@@ -66,6 +78,7 @@ const upsertFromComplianceRun = async (clientId, complianceRunAt, calculatedReco
 
     if (ALREADY_ACTIONED_STATUSES.includes(existing.reminderStatus)) {
       existing.complianceRunAt = complianceRunAt;
+      existing.lastComplianceReportLogId = complianceReportLogId;
       existing.logiformsStatusAtRun = record.status;
       existing.incompleteKind = incompleteKindOf(record);
       await existing.save();
@@ -112,10 +125,28 @@ const toReminderPopulatedShape = (row) => {
   return { ...rest, clientId: client ? { _id: client._id, name: client.name, wotcFormUrl: client.wotcFormUrl } : row.clientId };
 };
 
-const listReminders = ({ clientId, status, sortBy, sortDir } = {}) => {
+const listReminders = ({ clientId, status, sortBy, sortDir, complianceReportLogId } = {}) => {
   const query = {};
   if (clientId) query.clientId = clientId;
+  // 'all'/unset means "everything except dismissed" — a dismissed row is a
+  // soft-delete out of the working view, only visible by explicitly asking
+  // for status: 'dismissed' (the dedicated Dismissed tab).
   if (status && status !== 'all') query.reminderStatus = status;
+  else query.reminderStatus = { $ne: 'dismissed' };
+  // Scopes to one or more historical runs (the "View Emails" screen reached
+  // from History — a single row's own link, or several checkbox-selected
+  // rows at once) — the exact link added in Phase 1, not fuzzy timestamp
+  // matching. Accepts either one id or a comma-separated list.
+  const logIds = String(complianceReportLogId || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => mongoose.isValidObjectId(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+  if (logIds.length === 1) {
+    query.lastComplianceReportLogId = logIds[0];
+  } else if (logIds.length > 1) {
+    query.lastComplianceReportLogId = { $in: logIds };
+  }
 
   // Sorting by the client's name means sorting by a field on the referenced
   // Client document, not on ApplicantReminder itself — same aggregation
@@ -149,9 +180,55 @@ const loadActionableRow = async (id) => {
   if (row.reminderStatus === 'sent') {
     return { row, result: { id, status: 'already_sent' } };
   }
+  if (row.reminderStatus === 'dismissed') {
+    return { row, result: { id, status: 'dismissed' } };
+  }
   const client = await Client.findById(row.clientId);
   if (!client) return { row, result: { id, status: 'client_not_found' } };
   return { row, client };
+};
+
+const dismissReminders = async (ids, operatorEmail) => {
+  const results = [];
+  for (const id of ids || []) {
+    const row = await ApplicantReminder.findById(id);
+    if (!row) {
+      results.push({ id, status: 'not_found' });
+      continue;
+    }
+    if (row.reminderStatus === 'sent') {
+      results.push({ id, status: 'already_sent' });
+      continue;
+    }
+    row.reminderStatus = 'dismissed';
+    row.reminderActionedAt = new Date();
+    row.reminderActionedBy = operatorEmail || '';
+    row.errorMessage = undefined;
+    await row.save();
+    results.push({ id, status: 'dismissed' });
+  }
+  return results;
+};
+
+const undismissReminders = async (ids) => {
+  const results = [];
+  for (const id of ids || []) {
+    const row = await ApplicantReminder.findById(id);
+    if (!row) {
+      results.push({ id, status: 'not_found' });
+      continue;
+    }
+    if (row.reminderStatus !== 'dismissed') {
+      results.push({ id, status: 'not_dismissed' });
+      continue;
+    }
+    row.reminderStatus = 'pending';
+    row.reminderActionedAt = undefined;
+    row.reminderActionedBy = '';
+    await row.save();
+    results.push({ id, status: 'pending' });
+  }
+  return results;
 };
 
 const previewReminders = async (ids) => {
@@ -176,7 +253,10 @@ const previewReminders = async (ids) => {
 };
 
 
-const actionReminders = async (ids, operatorEmail, mode = 'draft') => {
+// onResult (optional): fired synchronously after each id finishes, so a
+// caller running this in the background (see applicantReminderJobService)
+// can report live per-item progress without waiting for the whole batch.
+const actionReminders = async (ids, operatorEmail, mode = 'draft', onResult) => {
   const { buildReminderPayload, createReminderDraft, REMINDER_SEND_ENABLED } = require('./reminderDraftService');
 
   if (mode === 'send' && REMINDER_SEND_ENABLED !== true) {
@@ -188,24 +268,28 @@ const actionReminders = async (ids, operatorEmail, mode = 'draft') => {
   }
 
   const results = [];
+  const record = (result) => {
+    results.push(result);
+    if (onResult) onResult(result);
+  };
 
   for (const id of ids || []) {
     const { row, client, result } = await loadActionableRow(id);
     if (result) {
-      results.push(result);
+      record(result);
       continue;
     }
 
     if (!row.employeeEmail) {
       row.reminderStatus = 'skipped_no_email';
       await row.save();
-      results.push({ id, status: 'skipped_no_email' });
+      record({ id, status: 'skipped_no_email' });
       continue;
     }
     if (!client.wotcFormUrl || !String(client.wotcFormUrl).trim()) {
       row.reminderStatus = 'skipped_no_form_url';
       await row.save();
-      results.push({ id, status: 'skipped_no_form_url' });
+      record({ id, status: 'skipped_no_form_url' });
       continue;
     }
 
@@ -226,7 +310,7 @@ const actionReminders = async (ids, operatorEmail, mode = 'draft') => {
       row.reminderActionedBy = operatorEmail || '';
       row.errorMessage = undefined;
       await row.save();
-      results.push({ id, status: row.reminderStatus, dryRun: row.dryRun, payloadPreview: outcome.payloadPreview });
+      record({ id, status: row.reminderStatus, dryRun: row.dryRun, payloadPreview: outcome.payloadPreview });
     } catch (error) {
       row.reminderStatus = 'failed';
       // sendReminderEmail's orphaned-draft case (message created in Graph but
@@ -237,11 +321,20 @@ const actionReminders = async (ids, operatorEmail, mode = 'draft') => {
       }
       row.errorMessage = error.message;
       await row.save();
-      results.push({ id, status: 'failed', error: error.message, graphMessageId: error.graphMessageId || null });
+      record({ id, status: 'failed', error: error.message, graphMessageId: error.graphMessageId || null });
     }
   }
 
   return results;
 };
 
-module.exports = { upsertFromComplianceRun, listReminders, previewReminders, actionReminders, normalizeSsn, hashSsn };
+module.exports = {
+  upsertFromComplianceRun,
+  listReminders,
+  previewReminders,
+  actionReminders,
+  dismissReminders,
+  undismissReminders,
+  normalizeSsn,
+  hashSsn,
+};

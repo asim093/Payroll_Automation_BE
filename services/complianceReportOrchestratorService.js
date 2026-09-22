@@ -5,7 +5,7 @@ const Client = require('../models/Client');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { findLatestPayrollFile, downloadDropboxFileToLocal, uploadReportFile } = require('./dropboxService');
 const { parsePayrollFile } = require('./payrollFileParserService');
-const { fetchLogiFormsDataForClient } = require('./logiFormsService');
+const { fetchLogiFormsDataForClient, fetchAllLogiFormsRecords, filterLogiFormsRecordsByFein } = require('./logiFormsService');
 const { calculateComplianceStatus, summarizeByWeek } = require('./complianceCalculationService');
 const { generateAdminReport, generateClientReport, saveReportToFile } = require('./complianceReportGeneratorService');
 const { createComplianceReportDraft } = require('./complianceEmailDraftService');
@@ -52,11 +52,19 @@ const logFailure = async (clientId, error) => {
   }
 };
 
-const generateComplianceReportForClient = async (clientId) => {
+// options.logiFormsRecords: when a batch run has already fetched the whole
+// LogiForms file once (see generateComplianceReportsForMultipleClients),
+// pass the shared parsed rows here and this filters by FEIN in memory
+// instead of re-downloading/re-parsing the same file per client. Omitted
+// (e.g. a single-client call, or existing tests that stub
+// fetchLogiFormsDataForClient directly) falls back to the original per-client
+// fetch, unchanged.
+const generateComplianceReportForClient = async (clientId, options = {}) => {
   let tempDir = null;
+  let client = null;
 
   try {
-    const client = await Client.findById(clientId);
+    client = await Client.findById(clientId);
     if (!client) {
       throw new Error(`Client not found: ${clientId}`);
     }
@@ -78,7 +86,9 @@ const generateComplianceReportForClient = async (clientId) => {
 
     const payrollRecords = await parsePayrollFile(localPayrollPath);
 
-    const logiFormsData = await fetchLogiFormsDataForClient(client.fein);
+    const logiFormsData = options.logiFormsRecords
+      ? filterLogiFormsRecordsByFein(options.logiFormsRecords, client.fein)
+      : await fetchLogiFormsDataForClient(client.fein);
 
     const calculatedRecords = await calculateComplianceStatus(payrollRecords, logiFormsData);
     const weeklyStats = summarizeByWeek(calculatedRecords);
@@ -117,6 +127,8 @@ const generateComplianceReportForClient = async (clientId) => {
       generatedAt,
       reportType: 'Client',
       filePath: uploadedClientPath,
+      sourcePayrollFileName: latestFile.name,
+      sourcePayrollFilePath: latestFile.path,
       totalEmployees,
       completedCount,
       incompleteCount,
@@ -179,11 +191,13 @@ const generateComplianceReportForClient = async (clientId) => {
     clientReportLog.emailStatus = emailStatus;
     await clientReportLog.save();
 
-    await ComplianceReportLog.create({
+    const adminReportLog = await ComplianceReportLog.create({
       clientId: client._id,
       generatedAt,
       reportType: 'Admin',
       filePath: uploadedAdminPath,
+      sourcePayrollFileName: latestFile.name,
+      sourcePayrollFilePath: latestFile.path,
       totalEmployees,
       completedCount,
       incompleteCount,
@@ -193,7 +207,7 @@ const generateComplianceReportForClient = async (clientId) => {
     });
 
     try {
-      const reminderResult = await upsertFromComplianceRun(client._id, new Date(), calculatedRecords);
+      const reminderResult = await upsertFromComplianceRun(client._id, new Date(), calculatedRecords, adminReportLog._id);
       console.log(
         `[COMPLIANCE-REPORT-ORCHESTRATOR] Applicant reminder queue for "${client.name}": ${JSON.stringify(reminderResult)}`
       );
@@ -215,7 +229,7 @@ const generateComplianceReportForClient = async (clientId) => {
   } catch (error) {
     console.error(`[COMPLIANCE-REPORT-ORCHESTRATOR] Failed for client ${clientId}: ${formatError(error)}`);
     await logFailure(clientId, error);
-    return { success: false, clientId, error: error.message };
+    return { success: false, clientId, clientName: client?.name || null, error: error.message };
   } finally {
     if (tempDir) {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -223,12 +237,44 @@ const generateComplianceReportForClient = async (clientId) => {
   }
 };
 
-const generateComplianceReportsForMultipleClients = async (clientIds) => {
-  const results = [];
-  for (const clientId of clientIds) {
-    const result = await generateComplianceReportForClient(clientId);
-    results.push(result);
-  }
+const DEFAULT_GENERATION_CONCURRENCY = 3;
+
+// Bounded-concurrency worker pool: at most `concurrency` clients are ever
+// being generated at once (kept low deliberately — every client's run can
+// end with a Graph draft created in the SAME single connected mailbox, so
+// concurrency stays modest to avoid bursting that one mailbox's rate limit,
+// not because Dropbox/ShareFile themselves need it). The LogiForms CSV is
+// fetched exactly once up front and shared (filtered per FEIN in memory)
+// instead of every client re-downloading the identical file. Results are
+// returned in the original submission order regardless of completion order;
+// onResult (optional) fires as each client finishes, for progress tracking
+// that reflects real completions rather than submission order.
+const generateComplianceReportsForMultipleClients = async (
+  clientIds,
+  { concurrency = DEFAULT_GENERATION_CONCURRENCY, onResult, logiFormsRecords: providedLogiFormsRecords } = {}
+) => {
+  // Tests can inject a stub dataset here (same shape fetchAllLogiFormsRecords
+  // returns) to run fully isolated from live ShareFile/production data.
+  const logiFormsRecords = providedLogiFormsRecords || (await fetchAllLogiFormsRecords());
+
+  const results = new Array(clientIds.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    for (;;) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= clientIds.length) return;
+
+      const result = await generateComplianceReportForClient(clientIds[currentIndex], { logiFormsRecords });
+      results[currentIndex] = result;
+      if (onResult) onResult(result);
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(concurrency, clientIds.length));
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
   return results;
 };
 

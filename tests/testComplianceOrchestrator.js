@@ -35,6 +35,29 @@ const TEST_CLIENTS = [
   },
 ];
 
+// Fully isolated LogiForms dataset injected via generateComplianceReportsFor
+// MultipleClients' `logiFormsRecords` option (added for Part 5's batch-fetch
+// refactor) — this test never touches Settings.logiFormsFolderPath or the
+// real ShareFile LogiForms CSV, so it stays stable regardless of what's
+// actually in production. First 4 employees per client get a matching
+// "Certified" record (-> complete); the 5th gets none (-> incomplete),
+// matching this test's original "4 completed, 1 incomplete" expectation.
+const buildFakeLogiFormsRecords = (clients) => {
+  const records = [];
+  for (const client of clients) {
+    const normalizedFein = client.fein.replace(/[^0-9]/g, '');
+    client.employees.slice(0, 4).forEach((employee, index) => {
+      records.push({
+        dateSubmitted: new Date(2024, 0, index + 1),
+        ssn: employee.ssn.replace(/-/g, ''),
+        status: 'Certified',
+        ein: normalizedFein,
+      });
+    });
+  }
+  return records;
+};
+
 const buildDummyPayrollFile = (employees) => {
   const rows = [
     ['HireDate', 'Employee Name', 'SSN', 'Email'],
@@ -60,7 +83,6 @@ const run = async () => {
 
   try {
     await connectDB();
-    process.env.LOGIFORMS_MOCK_MODE = 'true';
 
     console.log('=== Setup: creating dummy clients and uploading dummy payroll files to Dropbox ===');
     for (const testClient of TEST_CLIENTS) {
@@ -85,8 +107,11 @@ const run = async () => {
       check(`Latest payroll file found for "${testClient.name}"`, Boolean(latestFile));
     }
 
-    console.log('\n=== TEST 2: generateComplianceReportsForMultipleClients() - real run ===');
-    const results = await generateComplianceReportsForMultipleClients(createdClientIds.map(String));
+    console.log('\n=== TEST 2: generateComplianceReportsForMultipleClients() - real run, stubbed LogiForms data ===');
+    const fakeLogiFormsRecords = buildFakeLogiFormsRecords(TEST_CLIENTS);
+    const results = await generateComplianceReportsForMultipleClients(createdClientIds.map(String), {
+      logiFormsRecords: fakeLogiFormsRecords,
+    });
     console.log('Orchestrator results:', JSON.stringify(results, null, 2));
 
     check('Returned exactly 2 results', results.length === 2);

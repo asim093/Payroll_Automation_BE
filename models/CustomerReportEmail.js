@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const REPORT_EMAIL_STATUSES = ['pending', 'draft_created', 'sent', 'skipped_no_email', 'failed', 'superseded'];
+const REPORT_EMAIL_STATUSES = ['pending', 'draft_created', 'sent', 'skipped_no_email', 'failed', 'superseded', 'dismissed'];
 
 const customerReportEmailSchema = new mongoose.Schema(
   {

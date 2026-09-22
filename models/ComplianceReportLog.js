@@ -45,6 +45,18 @@ const complianceReportLogSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    // The payroll file this run's data was actually computed from — was
+    // previously fetched (findLatestPayrollFile) but never persisted
+    // anywhere, so there was no way to answer "which source file produced
+    // this run" after the fact.
+    sourcePayrollFileName: {
+      type: String,
+      trim: true,
+    },
+    sourcePayrollFilePath: {
+      type: String,
+      trim: true,
+    },
     totalEmployees: {
       type: Number,
     },

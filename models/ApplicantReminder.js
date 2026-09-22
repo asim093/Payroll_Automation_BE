@@ -8,6 +8,7 @@ const REMINDER_STATUSES = [
   'skipped_no_form_url',
   'failed',
   'superseded',
+  'dismissed',
 ];
 
 const INCOMPLETE_KINDS = ['no_logiforms_record', 'unrecognized_status'];
@@ -22,6 +23,18 @@ const applicantReminderSchema = new mongoose.Schema(
     },
     complianceRunAt: {
       type: Date,
+    },
+    // Exact, non-fuzzy link to the specific run that most recently touched
+    // this row (set on every create/refresh/hold in upsertFromComplianceRun)
+    // — deliberately NOT derived from complianceRunAt timestamp-matching,
+    // which is unreliable once multiple clients' runs interleave under
+    // bounded concurrency. Points at the Admin-type ComplianceReportLog for
+    // that run (the Client-type sibling is reachable from it via the
+    // existing generatedAt-pairing logic already used by
+    // ComplianceReportDetailPage).
+    lastComplianceReportLogId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ComplianceReportLog',
     },
     employeeName: {
       type: String,

@@ -10,13 +10,25 @@ const formatDateUTC = (date) => {
   return `${month}/${day}/${year}`;
 };
 
+// Reference formatting extracted from a real Excel-generated report file:
+// header row solid #156082 / white bold centered, Total row solid #E8E8E8 /
+// black bold centered, all cells thin-bordered #999999.
+const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF156082' } };
+const HEADER_FONT = { color: { argb: 'FFFFFFFF' }, bold: true };
+const TOTAL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E8E8' } };
+const TOTAL_FONT = { color: { argb: 'FF000000' }, bold: true };
+const CENTER_ALIGNMENT = { horizontal: 'center' };
+const THIN_BORDER_SIDE = { style: 'thin', color: { argb: 'FF999999' } };
+const THIN_BORDER = { top: THIN_BORDER_SIDE, left: THIN_BORDER_SIDE, bottom: THIN_BORDER_SIDE, right: THIN_BORDER_SIDE };
+const APPLICATION_TAB_COLOR = { argb: 'FFD9AAD4' };
+
 const buildComplianceSummarySheet = (worksheet, weeklyStats) => {
   worksheet.columns = [
-    { header: 'W/E Period', key: 'weekEnding', width: 16 },
-    { header: 'Total Hires', key: 'totalHires', width: 14 },
+    { header: 'W/E Period', key: 'weekEnding', width: 12.55 },
+    { header: 'Total Hires', key: 'totalHires', width: 12.55 },
     { header: 'Completed', key: 'completed', width: 14 },
     { header: 'Incomplete', key: 'incomplete', width: 14 },
-    { header: 'Compliance %', key: 'compliancePercent', width: 16 },
+    { header: 'Compliance %', key: 'compliancePercent', width: 12.55 },
   ];
   worksheet.getColumn('weekEnding').numFmt = 'mm/dd/yyyy';
 
@@ -45,6 +57,32 @@ const buildComplianceSummarySheet = (worksheet, weeklyStats) => {
     incomplete: totalIncomplete,
     compliancePercent: overallPercent,
   });
+
+  const headerRow = worksheet.getRow(1);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = HEADER_FILL;
+    cell.font = HEADER_FONT;
+    cell.alignment = CENTER_ALIGNMENT;
+  });
+
+  const totalRow = worksheet.getRow(worksheet.rowCount);
+  totalRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = TOTAL_FILL;
+    cell.font = TOTAL_FONT;
+    cell.alignment = CENTER_ALIGNMENT;
+  });
+
+  for (let rowNumber = 2; rowNumber < worksheet.rowCount; rowNumber += 1) {
+    worksheet.getRow(rowNumber).eachCell({ includeEmpty: true }, (cell) => {
+      cell.alignment = CENTER_ALIGNMENT;
+    });
+  }
+
+  for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    worksheet.getRow(rowNumber).eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = THIN_BORDER;
+    });
+  }
 };
 
 const APPLICATION_COLUMNS_ADMIN = [
@@ -80,6 +118,19 @@ const buildApplicationSheet = (worksheet, records, includeStatusAndNotes) => {
     }
     worksheet.addRow(row);
   }
+
+  const headerRow = worksheet.getRow(1);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.fill = HEADER_FILL;
+    cell.font = HEADER_FONT;
+    cell.alignment = CENTER_ALIGNMENT;
+  });
+
+  for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    worksheet.getRow(rowNumber).eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = THIN_BORDER;
+    });
+  }
 };
 
 const buildReportWorkbook = (clientName, calculatedRecords, weeklyStats, includeStatusAndNotes) => {
@@ -88,15 +139,22 @@ const buildReportWorkbook = (clientName, calculatedRecords, weeklyStats, include
   workbook.title = `Compliance Report - ${clientName}`;
   workbook.created = new Date();
 
+  // Compliance Report tab intentionally keeps no tab color (default).
   buildComplianceSummarySheet(workbook.addWorksheet('Compliance Report'), weeklyStats);
-  buildApplicationSheet(workbook.addWorksheet('All Applications'), calculatedRecords, includeStatusAndNotes);
+
+  const allApplicationsSheet = workbook.addWorksheet('All Applications', { properties: { tabColor: APPLICATION_TAB_COLOR } });
+  buildApplicationSheet(allApplicationsSheet, calculatedRecords, includeStatusAndNotes);
+
+  const completedSheet = workbook.addWorksheet('Completed Applications', { properties: { tabColor: APPLICATION_TAB_COLOR } });
   buildApplicationSheet(
-    workbook.addWorksheet('Completed Applications'),
+    completedSheet,
     calculatedRecords.filter((record) => record.isComplete),
     includeStatusAndNotes
   );
+
+  const incompleteSheet = workbook.addWorksheet('Incomplete Applications', { properties: { tabColor: APPLICATION_TAB_COLOR } });
   buildApplicationSheet(
-    workbook.addWorksheet('Incomplete Applications'),
+    incompleteSheet,
     calculatedRecords.filter((record) => !record.isComplete),
     includeStatusAndNotes
   );

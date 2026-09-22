@@ -17,7 +17,11 @@ const normalizeHeader = (header) => String(header ?? '').trim().toLowerCase();
 const normalizeFein = (value) => String(value ?? '').replace(/[^0-9]/g, '');
 const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
-const parseLogiFormsCsv = (localFilePath, fein) => {
+// Parses every valid row in the file regardless of EIN, each keeping its own
+// normalized ein — the basis for both parseLogiFormsCsv (single-FEIN,
+// existing per-client contract, untouched) and fetchAllLogiFormsRecords
+// (whole-file, fetched once per generation batch instead of once per client).
+const readAllLogiFormsRows = (localFilePath) => {
   if (!fs.existsSync(localFilePath)) {
     throw new Error(`LogiForms file not found: ${localFilePath}`);
   }
@@ -48,13 +52,9 @@ const parseLogiFormsCsv = (localFilePath, fein) => {
     columnIndex[field] = index;
   }
 
-  const normalizedFein = normalizeFein(fein);
   const records = [];
-
   for (const rawRow of rows.slice(1)) {
-    const einValue = rawRow[columnIndex.ein];
-    if (normalizeFein(einValue) !== normalizedFein) continue;
-
+    const ein = normalizeFein(rawRow[columnIndex.ein]);
     const dateSubmitted = parseDateValue(rawRow[columnIndex.dateSubmitted]);
     const ssn = normalizeSsn(rawRow[columnIndex.ssn]);
     const rawStatus = rawRow[columnIndex.status];
@@ -62,11 +62,28 @@ const parseLogiFormsCsv = (localFilePath, fein) => {
 
     if (!dateSubmitted || !ssn || !status) continue;
 
-    records.push({ dateSubmitted, ssn, status, ein: normalizedFein });
+    records.push({ dateSubmitted, ssn, status, ein });
   }
 
   records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
   return records;
+};
+
+// Existing per-client contract — unchanged return shape (ein on each record
+// is the normalized TARGET fein, not necessarily the row's own, matching the
+// original behavior relied on by testLogiFormsIntegration.js).
+const parseLogiFormsCsv = (localFilePath, fein) => {
+  const normalizedFein = normalizeFein(fein);
+  return readAllLogiFormsRows(localFilePath)
+    .filter((record) => record.ein === normalizedFein)
+    .map((record) => ({ ...record, ein: normalizedFein }));
+};
+
+// Pure in-memory filter, reusing rows already fetched once for a whole batch
+// via fetchAllLogiFormsRecords — same output shape as parseLogiFormsCsv.
+const filterLogiFormsRecordsByFein = (allRecords, fein) => {
+  const normalizedFein = normalizeFein(fein);
+  return allRecords.filter((record) => record.ein === normalizedFein).map((record) => ({ ...record, ein: normalizedFein }));
 };
 
 const fetchLogiFormsDataForClient = async (fein) => {
@@ -92,4 +109,37 @@ const fetchLogiFormsDataForClient = async (fein) => {
   }
 };
 
-module.exports = { fetchLogiFormsDataForClient, parseLogiFormsCsv };
+// Same download as fetchLogiFormsDataForClient but parses ALL rows (every
+// EIN) instead of filtering to one — meant to be called ONCE per multi-client
+// generation batch, with filterLogiFormsRecordsByFein() then applied per
+// client from the shared result, instead of every client re-downloading and
+// re-parsing the identical file.
+const fetchAllLogiFormsRecords = async () => {
+  const { logiFormsFolderPath } = await getSettings();
+  if (!logiFormsFolderPath) {
+    throw new Error('LogiForms folder path is not configured. Set "LogiForms Folder Path" on the Settings page first.');
+  }
+
+  const latestFile = await findLatestLogiFormsCsvInShareFile(logiFormsFolderPath);
+  if (!latestFile) {
+    throw new Error(`No LogiForms CSV file found in ShareFile folder "${logiFormsFolderPath}".`);
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logiforms-'));
+  const localFilePath = path.join(tempDir, latestFile.fileName);
+
+  try {
+    const content = await downloadFileContentById(latestFile.fileId);
+    fs.writeFileSync(localFilePath, content);
+    return readAllLogiFormsRows(localFilePath);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+};
+
+module.exports = {
+  fetchLogiFormsDataForClient,
+  fetchAllLogiFormsRecords,
+  filterLogiFormsRecordsByFein,
+  parseLogiFormsCsv,
+};
