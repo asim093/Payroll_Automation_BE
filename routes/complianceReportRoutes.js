@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   generateReports,
   getGenerateReportsStatus,
+  getActiveGenerateStatus,
   getComplianceReportStatus,
   downloadComplianceReport,
   getComplianceReportHistory,
@@ -11,6 +12,7 @@ const {
 } = require('../controllers/complianceReportController');
 
 router.post('/generate', generateReports);
+router.get('/generate-status/active', getActiveGenerateStatus);
 router.get('/generate-status/:jobId', getGenerateReportsStatus);
 router.get('/status', getComplianceReportStatus);
 router.get('/history', getComplianceReportHistory);

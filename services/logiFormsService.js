@@ -4,7 +4,7 @@ const path = require('path');
 const readline = require('readline');
 const { parse } = require('csv-parse/sync');
 const { getSettings } = require('./settingsService');
-const { findLatestLogiFormsCsvInShareFile, downloadFileContentById } = require('./sharefileService');
+const { findLatestLogiFormsCsvInShareFile, downloadFileContentByIdToPath } = require('./sharefileService');
 
 const EXPECTED_HEADERS = {
   dateSubmitted: 'DateSubmitted',
@@ -129,7 +129,7 @@ const readAllLogiFormsRows = (localFilePath) =>
       const key = `${ein}:${ssn}`;
       const existing = bestByKey.get(key);
       if (!existing || dateSubmitted.getTime() >= existing.dateSubmitted.getTime()) {
-        bestByKey.set(key, { dateSubmitted, ssn, status, ein });
+        bestByKey.set(key, { dateSubmitted, status });
       }
     });
 
@@ -147,7 +147,15 @@ const readAllLogiFormsRows = (localFilePath) =>
       // Sort kept purely to preserve the existing "sorted desc" output
       // contract (testLogiFormsIntegration.js asserts this) — correctness no
       // longer depends on it, since duplicates are already resolved above.
-      const records = Array.from(bestByKey.values());
+      const records = Array.from(bestByKey.entries(), ([key, value]) => {
+        const separatorIndex = key.indexOf(':');
+        return {
+          ein: key.slice(0, separatorIndex),
+          ssn: key.slice(separatorIndex + 1),
+          status: value.status,
+          dateSubmitted: value.dateSubmitted,
+        };
+      });
       records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
       resolve({ records, skippedRows });
     });
@@ -189,8 +197,7 @@ const fetchLogiFormsDataForClient = async (fein) => {
   const localFilePath = path.join(tempDir, latestFile.fileName);
 
   try {
-    const content = await downloadFileContentById(latestFile.fileId);
-    fs.writeFileSync(localFilePath, content);
+    await downloadFileContentByIdToPath(latestFile.fileId, localFilePath);
     // Explicitly awaited (not just `return parseLogiFormsCsv(...)`) — now
     // that parsing streams the file asynchronously, an un-awaited return
     // would let `finally` delete tempDir out from under the still-reading
@@ -222,8 +229,7 @@ const fetchAllLogiFormsRecords = async () => {
   const localFilePath = path.join(tempDir, latestFile.fileName);
 
   try {
-    const content = await downloadFileContentById(latestFile.fileId);
-    fs.writeFileSync(localFilePath, content);
+    await downloadFileContentByIdToPath(latestFile.fileId, localFilePath);
     // Explicitly awaited — see the same note in fetchLogiFormsDataForClient:
     // an un-awaited return here would let `finally` delete tempDir before
     // the streaming read finishes with it.

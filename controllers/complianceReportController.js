@@ -8,7 +8,7 @@ const ApplicantReminder = require('../models/ApplicantReminder');
 const { generateComplianceReportsForMultipleClients } = require('../services/complianceReportOrchestratorService');
 const { downloadDropboxFileBuffer } = require('../services/dropboxService');
 const { paginate, isPaginationRequested } = require('../utils/paginate');
-const { createJob, getJob, recordResult, setJobWarnings } = require('../services/complianceReportGenerationJobs');
+const { createJob, getJob, getActiveJob, recordResult, setJobWarnings, markJobFailed } = require('../services/complianceReportGenerationJobs');
 
 // A run's period isn't stored as its own field — it's derived from the
 // min/max weekEndingDate already present in weeklyBreakdown, so there's no
@@ -108,37 +108,38 @@ const generateReports = async (req, res) => {
     return res.status(400).json({ error: 'clientIds must be a non-empty array' });
   }
 
-  const jobId = createJob(clientIds);
+  const jobId = await createJob(clientIds);
   res.json({ success: true, jobId });
 
   generateComplianceReportsForMultipleClients(clientIds, {
     onResult: (result) => recordResult(jobId, result),
     onLogiFormsWarnings: (skippedRows) => setJobWarnings(jobId, skippedRows),
-  }).catch((error) => {
+  }).catch(async (error) => {
     console.error(`[COMPLIANCE-REPORTS] generateComplianceReportsForMultipleClients rejected unexpectedly: ${error.message}`);
-    // Whatever didn't get an onResult callback yet still needs the job to
-    // reach "done" instead of hanging forever on the frontend's poll.
-    const job = getJob(jobId);
+    const job = await getJob(jobId);
     const alreadyReported = job ? job.completed : 0;
+    const startedFromZero = alreadyReported === 0;
     for (let i = alreadyReported; i < clientIds.length; i += 1) {
-      recordResult(jobId, { success: false, clientId: clientIds[i], error: error.message });
+      await recordResult(jobId, { success: false, clientId: clientIds[i], error: error.message });
     }
+    if (startedFromZero) await markJobFailed(jobId);
   });
 };
 
-const getGenerateReportsStatus = (req, res) => {
-  const job = getJob(req.params.jobId);
+const getGenerateReportsStatus = async (req, res) => {
+  const job = await getJob(req.params.jobId);
   if (!job) {
     return res.status(404).json({ error: 'Job not found (it may have already expired).' });
   }
-  res.json({
-    jobId: job.jobId,
-    total: job.total,
-    completed: job.completed,
-    done: job.done,
-    results: job.results,
-    warnings: job.warnings,
-  });
+  res.json(job);
+};
+
+const getActiveGenerateStatus = async (req, res) => {
+  const job = await getActiveJob();
+  if (!job) {
+    return res.json({ active: false });
+  }
+  res.json({ active: true, ...job });
 };
 
 // Lists every client (not just active) so a report can be reviewed/generated
@@ -513,6 +514,7 @@ const getComplianceReportLogEmployees = async (req, res, next) => {
 module.exports = {
   generateReports,
   getGenerateReportsStatus,
+  getActiveGenerateStatus,
   getComplianceReportStatus,
   downloadComplianceReport,
   getComplianceReportHistory,

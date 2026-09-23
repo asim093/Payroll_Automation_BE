@@ -102,22 +102,26 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
     const adminWorkbook = generateAdminReport(client.name, calculatedRecords, weeklyStats);
     const clientWorkbook = generateClientReport(client.name, calculatedRecords, weeklyStats);
 
-    const adminLocalPath = await saveReportToFile(adminWorkbook, tempDir, 'Compliance Report Admin');
-    const clientLocalPath = await saveReportToFile(clientWorkbook, tempDir, `Compliance Report ${client.name}`);
+    const [adminLocalPath, clientLocalPath] = await Promise.all([
+      saveReportToFile(adminWorkbook, tempDir, 'Compliance Report Admin'),
+      saveReportToFile(clientWorkbook, tempDir, `Compliance Report ${client.name}`),
+    ]);
 
     const reportsFolderSegment = resolveReportsFolderSegment(client.dropboxPath);
-    const uploadedAdminPath = await uploadReportFile(
-      reportsFolderSegment,
-      path.basename(adminLocalPath),
-      fs.readFileSync(adminLocalPath),
-      client.dropboxPathIsAbsolute
-    );
-    const uploadedClientPath = await uploadReportFile(
-      reportsFolderSegment,
-      path.basename(clientLocalPath),
-      fs.readFileSync(clientLocalPath),
-      client.dropboxPathIsAbsolute
-    );
+    const [uploadedAdminPath, uploadedClientPath] = await Promise.all([
+      uploadReportFile(
+        reportsFolderSegment,
+        path.basename(adminLocalPath),
+        fs.readFileSync(adminLocalPath),
+        client.dropboxPathIsAbsolute
+      ),
+      uploadReportFile(
+        reportsFolderSegment,
+        path.basename(clientLocalPath),
+        fs.readFileSync(clientLocalPath),
+        client.dropboxPathIsAbsolute
+      ),
+    ]);
 
     const totalEmployees = calculatedRecords.length;
     const completedCount = calculatedRecords.filter((record) => record.isComplete).length;
@@ -244,7 +248,7 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
   }
 };
 
-const DEFAULT_GENERATION_CONCURRENCY = 3;
+const DEFAULT_GENERATION_CONCURRENCY = 1;
 
 // Bounded-concurrency worker pool: at most `concurrency` clients are ever
 // being generated at once (kept low deliberately — every client's run can

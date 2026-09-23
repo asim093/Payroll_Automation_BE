@@ -1,4 +1,7 @@
 
+const fs = require('fs');
+const { pipeline } = require('stream/promises');
+const { Readable } = require('stream');
 const Client = require('../models/Client');
 const FileLog = require('../models/FileLog');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
@@ -311,6 +314,47 @@ const downloadFileContentById = async (fileId) => {
     console.error(`downloadFileContentById ERROR ("${fileId}"): ${formatError(error)}`);
     throw error;
   }
+};
+
+const attemptDownloadFileContentByIdToPath = async (fileId, destPath) => {
+  const { apiBase, authHeaders } = await getShareFileContext();
+
+  const downloadUrl = `${apiBase}/Items(${fileId})/Download`;
+  const downloadResponse = await sfFetch(downloadUrl, { headers: authHeaders }, `Download ShareFile item ${fileId}`);
+  if (!downloadResponse.ok) {
+    const errorBody = await downloadResponse.text();
+    throw new Error(`Download failed (${downloadResponse.status}): ${errorBody}`);
+  }
+
+  const contentType = downloadResponse.headers.get('content-type') || '';
+  let streamedResponse = downloadResponse;
+  if (contentType.includes('application/json')) {
+    const downloadSpec = await downloadResponse.json();
+    streamedResponse = await fetch(downloadSpec.DownloadUrl);
+    if (!streamedResponse.ok) {
+      throw new Error(`Download from DownloadUrl failed (${streamedResponse.status})`);
+    }
+  }
+
+  await pipeline(Readable.fromWeb(streamedResponse.body), fs.createWriteStream(destPath));
+};
+
+const downloadFileContentByIdToPath = async (fileId, destPath) => {
+  let lastError;
+  for (let attempt = 1; attempt <= SF_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await attemptDownloadFileContentByIdToPath(fileId, destPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      console.error(`downloadFileContentByIdToPath ERROR ("${fileId}", attempt ${attempt}/${SF_FETCH_MAX_ATTEMPTS}): ${formatError(error)}`);
+      if (attempt >= SF_FETCH_MAX_ATTEMPTS) break;
+      const delayMs = SF_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      console.warn(`downloadFileContentByIdToPath ("${fileId}"): retrying in ${delayMs}ms (attempt ${attempt + 1}/${SF_FETCH_MAX_ATTEMPTS}).`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
 };
 
 const getLatestFileInShareFileFolder = async (clientFolderSegment, isAbsolute = false) => {
@@ -962,4 +1006,5 @@ module.exports = {
   deleteShareFileItemById,
   shareFileFolderChildCount,
   downloadFileContentById,
+  downloadFileContentByIdToPath,
 };

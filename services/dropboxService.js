@@ -10,6 +10,27 @@ const {
   refreshAccessToken,
 } = require('./dropboxOAuthSetupService');
 
+const DBX_RETRY_MAX_ATTEMPTS = 6;
+const DBX_RETRY_BASE_DELAY_MS = 500;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withDropboxRetry = async (label, fn) => {
+  let lastError;
+  for (let attempt = 1; attempt <= DBX_RETRY_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      console.error(`${label} ERROR (attempt ${attempt}/${DBX_RETRY_MAX_ATTEMPTS}): ${formatError(error)}`);
+      if (attempt >= DBX_RETRY_MAX_ATTEMPTS) break;
+      const delayMs = DBX_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      console.warn(`${label}: retrying in ${delayMs}ms (attempt ${attempt + 1}/${DBX_RETRY_MAX_ATTEMPTS}).`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+};
+
 const getDropboxPathRoot = () => {
   const namespaceId = process.env.DROPBOX_TEAM_FOLDER_NAMESPACE_ID;
   if (!namespaceId) return undefined;
@@ -288,23 +309,20 @@ const findLatestFileInFolder = async (clientFolderSegment, isAbsolute, extension
 };
 
 const findLatestPayrollFile = (clientFolderSegment, isAbsolute = false) =>
-  findLatestFileInFolder(clientFolderSegment, isAbsolute, PAYROLL_FILE_EXTENSIONS, 'findLatestPayrollFile');
+  withDropboxRetry('findLatestPayrollFile', () =>
+    findLatestFileInFolder(clientFolderSegment, isAbsolute, PAYROLL_FILE_EXTENSIONS, 'findLatestPayrollFile')
+  );
 
 const listPayrollFiles = (clientFolderSegment, isAbsolute = false) =>
   listFilesInFolder(clientFolderSegment, isAbsolute, PAYROLL_FILE_EXTENSIONS, 'listPayrollFiles');
 
-const downloadDropboxFileToLocal = async (dropboxFilePath, localFilePath) => {
-  const accessToken = await getDropboxAccessToken();
-  const dbx = createDropboxClient(accessToken);
-
-  try {
+const downloadDropboxFileToLocal = (dropboxFilePath, localFilePath) =>
+  withDropboxRetry(`downloadDropboxFileToLocal ("${dropboxFilePath}")`, async () => {
+    const accessToken = await getDropboxAccessToken();
+    const dbx = createDropboxClient(accessToken);
     const response = await dbx.filesDownload({ path: dropboxFilePath });
     fs.writeFileSync(localFilePath, response.result.fileBinary, 'binary');
-  } catch (error) {
-    console.error(`downloadDropboxFileToLocal ERROR ("${dropboxFilePath}"): ${formatError(error)}`);
-    throw error;
-  }
-};
+  });
 
 const downloadDropboxFileBuffer = async (dropboxFilePath) => {
   const accessToken = await getDropboxAccessToken();
@@ -319,24 +337,19 @@ const downloadDropboxFileBuffer = async (dropboxFilePath) => {
   }
 };
 
-const uploadReportFile = async (clientFolderSegment, fileName, contentBuffer, isAbsolute = false) => {
-  const accessToken = await getDropboxAccessToken();
-  const dbx = createDropboxClient(accessToken);
-  const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
-  const dropboxPath = `${folderPath}/${sanitizeForPath(fileName)}`;
-
-  try {
+const uploadReportFile = (clientFolderSegment, fileName, contentBuffer, isAbsolute = false) =>
+  withDropboxRetry(`uploadReportFile ("${fileName}" to "${clientFolderSegment}")`, async () => {
+    const accessToken = await getDropboxAccessToken();
+    const dbx = createDropboxClient(accessToken);
+    const folderPath = await resolveDropboxFolderPath(clientFolderSegment, isAbsolute);
+    const dropboxPath = `${folderPath}/${sanitizeForPath(fileName)}`;
     const response = await dbx.filesUpload({
       path: dropboxPath,
       contents: contentBuffer,
       mode: { '.tag': 'overwrite' },
     });
     return response.result.path_display;
-  } catch (error) {
-    console.error(`uploadReportFile ERROR ("${fileName}" to "${folderPath}"): ${formatError(error)}`);
-    throw error;
-  }
-};
+  });
 
 module.exports = {
   uploadFileToDropbox,

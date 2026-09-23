@@ -17,6 +17,8 @@ const SUPERSEDABLE_STATUSES = ['pending', 'failed', 'skipped_no_email', 'skipped
 // Undismiss action should do that.
 const ALREADY_ACTIONED_STATUSES = ['draft_created', 'sent', 'dismissed'];
 
+const BULK_WRITE_CHUNK_SIZE = 150;
+
 const normalizeSsn = (value) => String(value ?? '').replace(/-/g, '').trim();
 
 const hashSsn = (normalizedSsn) => crypto.createHash('sha256').update(normalizedSsn).digest('hex');
@@ -35,10 +37,8 @@ const upsertFromComplianceRun = async (clientId, complianceRunAt, calculatedReco
   const incomplete = (calculatedRecords || []).filter((record) => !record.isComplete);
 
   const seenHashes = [];
-  let created = 0;
-  let refreshed = 0;
-  let held = 0;
   let skippedNoSsn = 0;
+  const validRecords = [];
 
   for (const record of incomplete) {
     const normalizedSsn = normalizeSsn(record.ssn);
@@ -46,50 +46,60 @@ const upsertFromComplianceRun = async (clientId, complianceRunAt, calculatedReco
       skippedNoSsn += 1;
       continue;
     }
-
     const employeeSsnHash = hashSsn(normalizedSsn);
     seenHashes.push(employeeSsnHash);
+    validRecords.push({ record, normalizedSsn, employeeSsnHash });
+  }
 
-    const fields = {
-      complianceRunAt,
-      lastComplianceReportLogId: complianceReportLogId,
-      employeeName: record.employeeName || '',
-      employeeSsnLast4: normalizedSsn.slice(-4),
-      employeeEmail: record.email || '',
-      hireDate: record.startDate || null,
-      weekEndingDate: record.weekEndingDate || null,
-      logiformsStatusAtRun: record.status,
-      incompleteKind: incompleteKindOf(record),
+  let created = 0;
+  let refreshed = 0;
+  let held = 0;
+
+  if (validRecords.length > 0) {
+    const existingDocs = await ApplicantReminder.find(
+      { clientId, employeeSsnHash: { $in: validRecords.map((v) => v.employeeSsnHash) } },
+      { employeeSsnHash: 1, reminderStatus: 1 }
+    ).lean();
+    const existingStatusByHash = new Map(existingDocs.map((doc) => [doc.employeeSsnHash, doc.reminderStatus]));
+
+    const buildOp = ({ record, normalizedSsn, employeeSsnHash }) => {
+      const existingStatus = existingStatusByHash.get(employeeSsnHash);
+      if (!existingStatus) created += 1;
+      else if (ALREADY_ACTIONED_STATUSES.includes(existingStatus)) held += 1;
+      else refreshed += 1;
+
+      const isHeld = { $in: ['$reminderStatus', ALREADY_ACTIONED_STATUSES] };
+      return {
+        updateOne: {
+          filter: { clientId, employeeSsnHash },
+          update: [
+            {
+              $set: {
+                clientId,
+                employeeSsnHash,
+                complianceRunAt,
+                lastComplianceReportLogId: complianceReportLogId,
+                logiformsStatusAtRun: record.status,
+                incompleteKind: incompleteKindOf(record),
+                employeeName: { $cond: [isHeld, '$employeeName', record.employeeName || ''] },
+                employeeSsnLast4: { $cond: [isHeld, '$employeeSsnLast4', normalizedSsn.slice(-4)] },
+                employeeEmail: { $cond: [isHeld, '$employeeEmail', record.email || ''] },
+                hireDate: { $cond: [isHeld, '$hireDate', record.startDate || null] },
+                weekEndingDate: { $cond: [isHeld, '$weekEndingDate', record.weekEndingDate || null] },
+                reminderStatus: { $cond: [isHeld, '$reminderStatus', 'pending'] },
+                reminderMode: { $ifNull: ['$reminderMode', 'draft'] },
+                errorMessage: { $cond: [isHeld, '$errorMessage', '$$REMOVE'] },
+              },
+            },
+          ],
+          upsert: true,
+        },
+      };
     };
 
-    const existing = await ApplicantReminder.findOne({ clientId, employeeSsnHash });
-
-    if (!existing) {
-      await ApplicantReminder.create({
-        clientId,
-        employeeSsnHash,
-        reminderStatus: 'pending',
-        reminderMode: 'draft',
-        ...fields,
-      });
-      created += 1;
-      continue;
-    }
-
-    if (ALREADY_ACTIONED_STATUSES.includes(existing.reminderStatus)) {
-      existing.complianceRunAt = complianceRunAt;
-      existing.lastComplianceReportLogId = complianceReportLogId;
-      existing.logiformsStatusAtRun = record.status;
-      existing.incompleteKind = incompleteKindOf(record);
-      await existing.save();
-      held += 1;
-      continue;
-    }
-
-    if (RESETTABLE_STATUSES.includes(existing.reminderStatus)) {
-      Object.assign(existing, fields, { reminderStatus: 'pending', errorMessage: undefined });
-      await existing.save();
-      refreshed += 1;
+    for (let i = 0; i < validRecords.length; i += BULK_WRITE_CHUNK_SIZE) {
+      const chunkOps = validRecords.slice(i, i + BULK_WRITE_CHUNK_SIZE).map(buildOp);
+      await ApplicantReminder.bulkWrite(chunkOps, { ordered: false });
     }
   }
 

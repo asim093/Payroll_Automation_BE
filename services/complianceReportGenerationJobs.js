@@ -1,45 +1,57 @@
-const crypto = require('crypto');
+const ComplianceGenerationJob = require('../models/ComplianceGenerationJob');
 
-// In-memory only — a page refresh loses job tracking, which is fine here
-// since the underlying generation work itself is unaffected and the client
-// list will simply show the real per-client result once it completes either
-// way. Jobs are pruned a while after completion so this Map can't grow
-// unbounded across a long-running server process.
-const JOB_TTL_MS = 10 * 60 * 1000;
-
-const jobs = new Map();
-
-const createJob = (clientIds) => {
-  const jobId = crypto.randomUUID();
-  jobs.set(jobId, {
-    jobId,
+const createJob = async (clientIds) => {
+  const job = await ComplianceGenerationJob.create({
+    status: 'running',
+    clientIds,
     total: clientIds.length,
-    completed: 0,
-    done: false,
     results: [],
-    warnings: [],
+    logiFormsWarnings: [],
     startedAt: new Date(),
   });
-  return jobId;
+  return job._id.toString();
 };
 
-const getJob = (jobId) => jobs.get(jobId) || null;
+const toJobDto = (job) => ({
+  jobId: job._id.toString(),
+  total: job.total,
+  completed: job.results.length,
+  done: job.status !== 'running',
+  status: job.status,
+  results: job.results,
+  warnings: job.logiFormsWarnings,
+});
 
-const recordResult = (jobId, result) => {
-  const job = jobs.get(jobId);
+const getJob = async (jobId) => {
+  const job = await ComplianceGenerationJob.findById(jobId).lean();
+  return job ? toJobDto(job) : null;
+};
+
+const getActiveJob = async () => {
+  const job = await ComplianceGenerationJob.findOne({ status: 'running' }).sort({ startedAt: -1 }).lean();
+  return job ? toJobDto(job) : null;
+};
+
+const recordResult = async (jobId, result) => {
+  const job = await ComplianceGenerationJob.findByIdAndUpdate(
+    jobId,
+    { $push: { results: result } },
+    { returnDocument: 'after' }
+  );
   if (!job) return;
-  job.results.push(result);
-  job.completed += 1;
-  if (job.completed >= job.total) {
-    job.done = true;
-    setTimeout(() => jobs.delete(jobId), JOB_TTL_MS);
+  if (job.results.length >= job.total) {
+    job.status = 'completed';
+    job.completedAt = new Date();
+    await job.save();
   }
 };
 
-const setJobWarnings = (jobId, warnings) => {
-  const job = jobs.get(jobId);
-  if (!job) return;
-  job.warnings = warnings;
+const setJobWarnings = async (jobId, warnings) => {
+  await ComplianceGenerationJob.updateOne({ _id: jobId }, { $set: { logiFormsWarnings: warnings } });
 };
 
-module.exports = { createJob, getJob, recordResult, setJobWarnings };
+const markJobFailed = async (jobId) => {
+  await ComplianceGenerationJob.updateOne({ _id: jobId }, { $set: { status: 'failed', completedAt: new Date() } });
+};
+
+module.exports = { createJob, getJob, getActiveJob, recordResult, setJobWarnings, markJobFailed };
