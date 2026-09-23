@@ -36,7 +36,7 @@ const FAKE_LOGIFORMS_DATA = [
 
 logiFormsService.fetchLogiFormsDataForClient = async (fein) => {
   console.log(`[STUB] fetchLogiFormsDataForClient called with fein="${fein}" -> returning ${FAKE_LOGIFORMS_DATA.length} fake rows (real ShareFile LogiForms CSV NOT touched).`);
-  return FAKE_LOGIFORMS_DATA;
+  return { records: FAKE_LOGIFORMS_DATA, skippedRows: [] };
 };
 
 const { generateComplianceReportForClient } = require('../services/complianceReportOrchestratorService');

@@ -8,7 +8,7 @@ const ApplicantReminder = require('../models/ApplicantReminder');
 const { generateComplianceReportsForMultipleClients } = require('../services/complianceReportOrchestratorService');
 const { downloadDropboxFileBuffer } = require('../services/dropboxService');
 const { paginate, isPaginationRequested } = require('../utils/paginate');
-const { createJob, getJob, recordResult } = require('../services/complianceReportGenerationJobs');
+const { createJob, getJob, recordResult, setJobWarnings } = require('../services/complianceReportGenerationJobs');
 
 // A run's period isn't stored as its own field — it's derived from the
 // min/max weekEndingDate already present in weeklyBreakdown, so there's no
@@ -113,6 +113,7 @@ const generateReports = async (req, res) => {
 
   generateComplianceReportsForMultipleClients(clientIds, {
     onResult: (result) => recordResult(jobId, result),
+    onLogiFormsWarnings: (skippedRows) => setJobWarnings(jobId, skippedRows),
   }).catch((error) => {
     console.error(`[COMPLIANCE-REPORTS] generateComplianceReportsForMultipleClients rejected unexpectedly: ${error.message}`);
     // Whatever didn't get an onResult callback yet still needs the job to
@@ -136,6 +137,7 @@ const getGenerateReportsStatus = (req, res) => {
     completed: job.completed,
     done: job.done,
     results: job.results,
+    warnings: job.warnings,
   });
 };
 

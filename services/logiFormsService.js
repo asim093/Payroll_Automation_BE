@@ -1,7 +1,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { parse } = require('csv-parse');
+const readline = require('readline');
+const { parse } = require('csv-parse/sync');
 const { getSettings } = require('./settingsService');
 const { findLatestLogiFormsCsvInShareFile, downloadFileContentById } = require('./sharefileService');
 
@@ -69,17 +70,6 @@ const parseDateSubmittedTimestamp = (value) => {
   return Number.isNaN(fallback.getTime()) ? null : fallback;
 };
 
-// Streaming, row-by-row read — never materializes the whole file as an
-// in-memory object graph (the old XLSX.readFile + sheet_to_json path did
-// exactly that, which is what made 750K-row files take 25+ minutes and
-// balloon to 2GB+ RSS; see the investigation this replaces). Duplicate-key
-// (EIN, SSN) resolution happens INCREMENTALLY during the stream — a Map is
-// updated in place, keeping only the current best (max DateSubmitted) row
-// per key — so peak memory is proportional to the number of unique
-// (EIN, SSN) pairs, not the total row count. Keyed on EIN+SSN together
-// (not SSN alone) because the same person can legitimately submit under
-// different employers; those are different applications, not duplicates of
-// each other, and must not be collapsed into one.
 const readAllLogiFormsRows = (localFilePath) =>
   new Promise((resolve, reject) => {
     if (!fs.existsSync(localFilePath)) {
@@ -88,34 +78,50 @@ const readAllLogiFormsRows = (localFilePath) =>
     }
 
     const bestByKey = new Map();
-    let sawAnyRow = false;
-    let headersChecked = false;
+    const skippedRows = [];
+    let lineNumber = 0;
+    let headerColumns = null;
+    let sawAnyDataLine = false;
 
-    const parser = fs.createReadStream(localFilePath).pipe(
-      parse({
-        bom: true,
-        skip_empty_lines: true,
-        relax_column_count: true,
-        columns: (headerRow) => headerRow.map((header) => normalizeHeader(header)),
-      })
-    );
+    const rl = readline.createInterface({
+      input: fs.createReadStream(localFilePath),
+      crlfDelay: Infinity,
+    });
 
-    parser.on('data', (row) => {
-      sawAnyRow = true;
-      if (!headersChecked) {
-        headersChecked = true;
-        for (const [, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
-          if (!(normalizeHeader(expectedHeader) in row)) {
-            parser.destroy(new Error(`LogiForms file is missing required column "${expectedHeader}": ${localFilePath}`));
-            return;
-          }
-        }
+    rl.on('line', (rawLine) => {
+      lineNumber += 1;
+      const line = lineNumber === 1 ? rawLine.replace(/^﻿/, '') : rawLine;
+      if (!line.trim()) return;
+
+      let fields;
+      try {
+        [fields] = parse(line, { relax_column_count: true });
+      } catch (error) {
+        skippedRows.push({
+          lineNumber,
+          snippet: line.length > 200 ? `${line.slice(0, 200)}…` : line,
+          error: error.message,
+        });
+        return;
       }
 
-      const ein = normalizeFein(row[normalizeHeader(EXPECTED_HEADERS.ein)]);
-      const dateSubmitted = parseDateSubmittedTimestamp(row[normalizeHeader(EXPECTED_HEADERS.dateSubmitted)]);
-      const ssn = normalizeSsn(row[normalizeHeader(EXPECTED_HEADERS.ssn)]);
-      const rawStatus = row[normalizeHeader(EXPECTED_HEADERS.status)];
+      if (lineNumber === 1) {
+        headerColumns = fields.map((header) => normalizeHeader(header));
+        for (const [, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
+          if (!headerColumns.includes(normalizeHeader(expectedHeader))) {
+            rl.close();
+            reject(new Error(`LogiForms file is missing required column "${expectedHeader}": ${localFilePath}`));
+          }
+        }
+        return;
+      }
+
+      sawAnyDataLine = true;
+      const columnIndex = (field) => headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS[field]));
+      const ein = normalizeFein(fields[columnIndex('ein')]);
+      const dateSubmitted = parseDateSubmittedTimestamp(fields[columnIndex('dateSubmitted')]);
+      const ssn = normalizeSsn(fields[columnIndex('ssn')]);
+      const rawStatus = fields[columnIndex('status')];
       const status = rawStatus === null || rawStatus === undefined ? '' : String(rawStatus).trim();
 
       if (!dateSubmitted || !ssn || !status) return;
@@ -127,10 +133,14 @@ const readAllLogiFormsRows = (localFilePath) =>
       }
     });
 
-    parser.on('error', (error) => reject(error));
+    rl.on('error', (error) => reject(error));
 
-    parser.on('end', () => {
-      if (!sawAnyRow) {
+    rl.on('close', () => {
+      if (!headerColumns) {
+        reject(new Error(`LogiForms file is empty: ${localFilePath}`));
+        return;
+      }
+      if (!sawAnyDataLine && skippedRows.length === 0) {
         reject(new Error(`LogiForms file is empty: ${localFilePath}`));
         return;
       }
@@ -139,7 +149,7 @@ const readAllLogiFormsRows = (localFilePath) =>
       // longer depends on it, since duplicates are already resolved above.
       const records = Array.from(bestByKey.values());
       records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
-      resolve(records);
+      resolve({ records, skippedRows });
     });
   });
 
@@ -150,8 +160,11 @@ const readAllLogiFormsRows = (localFilePath) =>
 // caller already awaits or returns this from an async function.
 const parseLogiFormsCsv = async (localFilePath, fein) => {
   const normalizedFein = normalizeFein(fein);
-  const allRecords = await readAllLogiFormsRows(localFilePath);
-  return allRecords.filter((record) => record.ein === normalizedFein).map((record) => ({ ...record, ein: normalizedFein }));
+  const { records: allRecords, skippedRows } = await readAllLogiFormsRows(localFilePath);
+  const records = allRecords
+    .filter((record) => record.ein === normalizedFein)
+    .map((record) => ({ ...record, ein: normalizedFein }));
+  return { records, skippedRows };
 };
 
 // Pure in-memory filter, reusing rows already fetched once for a whole batch

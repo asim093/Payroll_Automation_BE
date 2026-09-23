@@ -17,6 +17,7 @@ const createJob = (clientIds) => {
     completed: 0,
     done: false,
     results: [],
+    warnings: [],
     startedAt: new Date(),
   });
   return jobId;
@@ -35,4 +36,10 @@ const recordResult = (jobId, result) => {
   }
 };
 
-module.exports = { createJob, getJob, recordResult };
+const setJobWarnings = (jobId, warnings) => {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  job.warnings = warnings;
+};
+
+module.exports = { createJob, getJob, recordResult, setJobWarnings };

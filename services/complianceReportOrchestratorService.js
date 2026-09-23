@@ -86,9 +86,15 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
 
     const payrollRecords = await parsePayrollFile(localPayrollPath);
 
-    const logiFormsData = options.logiFormsRecords
-      ? filterLogiFormsRecordsByFein(options.logiFormsRecords, client.fein)
-      : await fetchLogiFormsDataForClient(client.fein);
+    let logiFormsData;
+    let logiFormsSkippedRows = [];
+    if (options.logiFormsRecords) {
+      logiFormsData = filterLogiFormsRecordsByFein(options.logiFormsRecords, client.fein);
+    } else {
+      const fetched = await fetchLogiFormsDataForClient(client.fein);
+      logiFormsData = fetched.records;
+      logiFormsSkippedRows = fetched.skippedRows;
+    }
 
     const calculatedRecords = await calculateComplianceStatus(payrollRecords, logiFormsData);
     const weeklyStats = summarizeByWeek(calculatedRecords);
@@ -225,6 +231,7 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
       completedCount,
       incompleteCount,
       emailStatus,
+      logiFormsSkippedRows,
     };
   } catch (error) {
     console.error(`[COMPLIANCE-REPORT-ORCHESTRATOR] Failed for client ${clientId}: ${formatError(error)}`);
@@ -251,11 +258,21 @@ const DEFAULT_GENERATION_CONCURRENCY = 3;
 // that reflects real completions rather than submission order.
 const generateComplianceReportsForMultipleClients = async (
   clientIds,
-  { concurrency = DEFAULT_GENERATION_CONCURRENCY, onResult, logiFormsRecords: providedLogiFormsRecords } = {}
+  {
+    concurrency = DEFAULT_GENERATION_CONCURRENCY,
+    onResult,
+    onLogiFormsWarnings,
+    logiFormsRecords: providedLogiFormsRecords,
+  } = {}
 ) => {
-  // Tests can inject a stub dataset here (same shape fetchAllLogiFormsRecords
-  // returns) to run fully isolated from live ShareFile/production data.
-  const logiFormsRecords = providedLogiFormsRecords || (await fetchAllLogiFormsRecords());
+  let logiFormsRecords = providedLogiFormsRecords;
+  if (!logiFormsRecords) {
+    const fetched = await fetchAllLogiFormsRecords();
+    logiFormsRecords = fetched.records;
+    if (onLogiFormsWarnings && fetched.skippedRows.length > 0) {
+      onLogiFormsWarnings(fetched.skippedRows);
+    }
+  }
 
   const results = new Array(clientIds.length);
   let nextIndex = 0;

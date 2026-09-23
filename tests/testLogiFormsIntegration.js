@@ -35,8 +35,8 @@ const run = async () => {
     fs.writeFileSync(csvPath, CSV_CONTENT);
 
     console.log('=== TEST 1: parseLogiFormsCsv filters by FEIN, drops incomplete rows, strips SSN dashes, sorts desc ===');
-    const dashlessRecords = await parseLogiFormsCsv(csvPath, '123456789');
-    const dashedRecords = await parseLogiFormsCsv(csvPath, '12-3456789');
+    const { records: dashlessRecords, skippedRows: dashlessSkippedRows } = await parseLogiFormsCsv(csvPath, '123456789');
+    const { records: dashedRecords } = await parseLogiFormsCsv(csvPath, '12-3456789');
     console.log('Records for FEIN 12-3456789:', JSON.stringify(dashlessRecords, null, 2));
 
     check('Returned exactly 4 records (5 valid rows minus 3 dropped for missing fields, 1 excluded by EIN)', dashlessRecords.length === 4);
@@ -44,6 +44,28 @@ const run = async () => {
     check('Dashless and dashed FEIN input return the same records', dashlessRecords.length === dashedRecords.length);
     check('SSN dashes stripped', dashlessRecords.every((record) => !record.ssn.includes('-')));
     check('Sorted by DateSubmitted descending (newest first)', dashlessRecords[0].ssn === '111111115' && dashlessRecords[3].ssn === '111111111');
+    check('No malformed rows in this well-formed synthetic CSV', dashlessSkippedRows.length === 0);
+
+    console.log('\n=== TEST 1b: a row with an unescaped literal quote is skipped, not fatal ===');
+    const MALFORMED_CSV_CONTENT = [
+      'DateSubmitted,EIN,SSN,Status,Notes',
+      '2024-01-05,12-3456789,111-11-1111,New,ignored column',
+      '2024-01-06,12-3456789,111-11-1112,DNQ,Kobersha "kobie" unescaped quote',
+      '2024-01-07,12-3456789,111-11-1113,Qualified,',
+    ].join('\n');
+    const malformedCsvPath = path.join(tempDir, 'logiforms-test-malformed.csv');
+    fs.writeFileSync(malformedCsvPath, MALFORMED_CSV_CONTENT);
+    const { records: malformedTestRecords, skippedRows: malformedTestSkipped } = await parseLogiFormsCsv(
+      malformedCsvPath,
+      '12-3456789'
+    );
+    check('Well-formed rows still parsed despite one malformed row', malformedTestRecords.length === 2);
+    check('Exactly 1 row skipped and reported', malformedTestSkipped.length === 1);
+    check('Skipped row records the real line number (line 3, 1-indexed)', malformedTestSkipped[0]?.lineNumber === 3);
+    check(
+      'Skipped row snippet contains the offending text',
+      malformedTestSkipped[0]?.snippet?.includes('Kobersha')
+    );
 
     console.log('\n=== TEST 2: end-to-end - Phase 2 shape -> Phase 3 calculation -> Phase 4 LogiForms ===');
     const monday = new Date(Date.UTC(2024, 0, 8));
