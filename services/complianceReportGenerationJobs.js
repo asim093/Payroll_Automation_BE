@@ -1,4 +1,5 @@
 const ComplianceGenerationJob = require('../models/ComplianceGenerationJob');
+const { broadcastComplianceJobStatus } = require('./socketService');
 
 const createJob = async (clientIds) => {
   const job = await ComplianceGenerationJob.create({
@@ -9,6 +10,7 @@ const createJob = async (clientIds) => {
     logiFormsWarnings: [],
     startedAt: new Date(),
   });
+  broadcastComplianceJobStatus(toJobDto(job));
   return job._id.toString();
 };
 
@@ -44,14 +46,25 @@ const recordResult = async (jobId, result) => {
     job.completedAt = new Date();
     await job.save();
   }
+  broadcastComplianceJobStatus(toJobDto(job));
 };
 
 const setJobWarnings = async (jobId, warnings) => {
-  await ComplianceGenerationJob.updateOne({ _id: jobId }, { $set: { logiFormsWarnings: warnings } });
+  const job = await ComplianceGenerationJob.findByIdAndUpdate(
+    jobId,
+    { $set: { logiFormsWarnings: warnings } },
+    { returnDocument: 'after' }
+  );
+  if (job) broadcastComplianceJobStatus(toJobDto(job));
 };
 
 const markJobFailed = async (jobId) => {
-  await ComplianceGenerationJob.updateOne({ _id: jobId }, { $set: { status: 'failed', completedAt: new Date() } });
+  const job = await ComplianceGenerationJob.findByIdAndUpdate(
+    jobId,
+    { $set: { status: 'failed', completedAt: new Date() } },
+    { returnDocument: 'after' }
+  );
+  if (job) broadcastComplianceJobStatus(toJobDto(job));
 };
 
 module.exports = { createJob, getJob, getActiveJob, recordResult, setJobWarnings, markJobFailed };

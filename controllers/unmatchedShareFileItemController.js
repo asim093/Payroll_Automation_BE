@@ -4,6 +4,7 @@ const FileLog = require('../models/FileLog');
 const { uploadFileToDropbox } = require('../services/dropboxService');
 const { downloadFileContentById } = require('../services/sharefileService');
 const { formatError } = require('../utils/formatError');
+const { broadcastClientDataChanged } = require('../services/socketService');
 
 const normalizeForMatch = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -111,6 +112,7 @@ exports.resolveUnmatchedItem = async (req, res, next) => {
     if (error) {
       return res.status(400).json({ error });
     }
+    broadcastClientDataChanged({ reason: 'unmatched_item_resolved', clientId: client._id.toString() });
 
     const updated = await UnmatchedShareFileItem.findById(item._id).populate('resolvedClientId');
     res.status(200).json(updated);
@@ -147,6 +149,9 @@ exports.bulkResolveUnmatchedItems = async (req, res, next) => {
     }
 
     const succeeded = results.filter((result) => result.success).length;
+    if (succeeded > 0) {
+      broadcastClientDataChanged({ reason: 'unmatched_items_bulk_resolved', clientId: client._id.toString(), succeeded });
+    }
     res.status(200).json({ succeeded, failed: results.length - succeeded, results });
   } catch (error) {
     next(error);
@@ -165,6 +170,7 @@ exports.dismissUnmatchedItem = async (req, res, next) => {
 
     item.status = 'dismissed';
     await item.save();
+    broadcastClientDataChanged({ reason: 'unmatched_item_dismissed' });
     res.status(200).json(item);
   } catch (error) {
     next(error);
@@ -186,6 +192,7 @@ exports.restoreUnmatchedItem = async (req, res, next) => {
 
     item.status = 'unresolved';
     await item.save();
+    broadcastClientDataChanged({ reason: 'unmatched_item_restored' });
     res.status(200).json(item);
   } catch (error) {
     next(error);
@@ -198,6 +205,7 @@ exports.deleteUnmatchedItem = async (req, res, next) => {
     if (!item) {
       return res.status(404).json({ error: 'Unmatched item not found' });
     }
+    broadcastClientDataChanged({ reason: 'unmatched_item_deleted' });
     res.status(200).json({ message: 'Removed from the review list.' });
   } catch (error) {
     next(error);

@@ -13,6 +13,11 @@ const { fetchFileFromShareFile } = require('./sharefileService');
 const { assignCategory, ensureCategoryExists, copyEmailToFolder } = require('./graphService');
 const { generateUniqueFilename } = require('../utils/generateUniqueFilename');
 const { isSenderIgnored } = require('./ignoreRuleService');
+// processEmail runs inside the mail-sync CRON process (a separate process
+// from the web service, with no live socket connections of its own) — so
+// this notifies the web service over HTTP instead of calling
+// broadcastClientDataChanged directly, which would silently no-op here.
+const { notifyClientDataChanged: broadcastClientDataChanged } = require('./crossProcessNotify');
 
 const PROCESSED_CATEGORY_NAME = 'Processed';
 const PROCESSED_CATEGORY_COLOR = 'preset1'; 
@@ -265,6 +270,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
         matchMethod: 'notification_pattern',
       });
       console.log(`[SHAREFILE NOTIFICATION] File retrieved and saved for ${notificationClient.name}.`);
+      broadcastClientDataChanged({ reason: 'sharefile_notification_matched', clientId: notificationClient._id.toString() });
     } catch (error) {
       console.error(
         `[SHAREFILE NOTIFICATION] ERROR fetching file for ${notificationClient.name}: ${error.message}`
@@ -283,6 +289,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
         authMode,
         processingError: `ShareFile folder empty or not found for client "${notificationClient.name}": ${error.message}`,
       });
+      broadcastClientDataChanged({ reason: 'sharefile_notification_failed', clientId: notificationClient._id.toString() });
     }
 
     return emailLog;
@@ -318,6 +325,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     console.log(
       `[MATCHED] ${messageId} — sender "${sender}" matched client "${matchedClient.name}". EmailLog created (status: processed).`
     );
+    broadcastClientDataChanged({ reason: 'email_matched', clientId: matchedClient._id.toString() });
     return emailLog;
   }
 
@@ -344,6 +352,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
     console.log(
       `[IGNORED] ${messageId} — sender "${sender}" matches an ignore rule. Logged and auto-dismissed (visible in Dismissed).`
     );
+    broadcastClientDataChanged({ reason: 'email_auto_dismissed' });
     return emailLog;
   }
 
@@ -407,6 +416,7 @@ const processEmail = async (emailData, accessToken, isDelegated = false) => {
       ? `[NEEDS REVIEW] ${messageId} — sender "${sender}" matches inactive client "${inactiveMatch.name}". EmailLog created (status: needs_review) + ReviewQueue entry added (reason: client_inactive).`
       : `[NEEDS REVIEW] ${messageId} — sender "${sender}" matched no client. EmailLog created (status: needs_review) + ReviewQueue entry added.`
   );
+  broadcastClientDataChanged({ reason: 'email_needs_review' });
   return emailLog;
 };
 

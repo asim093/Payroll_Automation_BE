@@ -1,4 +1,4 @@
-const { broadcastScanActivity } = require('../services/socketService');
+const { broadcastScanActivity, broadcastClientDataChanged } = require('../services/socketService');
 const { deriveScanActivityView } = require('../utils/scanActivityView');
 
 const notifyProgress = (req, res) => {
@@ -22,4 +22,18 @@ const notifyProgress = (req, res) => {
   res.status(200).json({ received: true });
 };
 
-module.exports = { notifyProgress };
+const notifyClientDataChanged = (req, res) => {
+  const providedSecret = req.headers['x-internal-secret'];
+
+  if (!process.env.INTERNAL_NOTIFY_SECRET) {
+    return res.status(500).json({ error: 'INTERNAL_NOTIFY_SECRET is not configured on this server' });
+  }
+  if (!providedSecret || providedSecret !== process.env.INTERNAL_NOTIFY_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  broadcastClientDataChanged(req.body || {});
+  res.status(200).json({ received: true });
+};
+
+module.exports = { notifyProgress, notifyClientDataChanged };

@@ -8,6 +8,10 @@ const { uploadFileToDropbox } = require('./services/dropboxService');
 const { recordScanErrors } = require('./services/scanErrorLogService');
 const { formatError } = require('./utils/formatError');
 const { startPhase, startItem, completeItem } = require('./services/scanActivityService');
+// Runs inside the sharefile-bridge CRON process (separate from the web
+// service, no live socket connections) — notify over HTTP instead of calling
+// broadcastClientDataChanged directly (see crossProcessNotify.js).
+const { notifyClientDataChanged: broadcastClientDataChanged } = require('./services/crossProcessNotify');
 
 const PROCESS_KEY = 'shareFileBridge';
 
@@ -105,6 +109,13 @@ const processShareFileScan = async ({ since } = {}) => {
 
   if (errors.length > 0) {
     await recordScanErrors(PROCESS_KEY, errors);
+  }
+
+  // One broadcast for the whole cycle (not per-file) — covers the Ingestion
+  // page, which (unlike ClientProfilePage) has no scan-activity-based live
+  // refresh at all today.
+  if (tree.newFiles.length > 0 || tree.unmatchedFilesRecorded > 0 || tree.autoResolvedFiles > 0) {
+    broadcastClientDataChanged({ reason: 'sharefile_scan_complete', saved, failed, unmatchedFilesRecorded: tree.unmatchedFilesRecorded });
   }
 
   console.log('\n--- ShareFile scan summary ---');

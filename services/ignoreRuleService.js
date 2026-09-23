@@ -2,6 +2,7 @@ const IgnoreRule = require('../models/IgnoreRule');
 const EmailLog = require('../models/EmailLog');
 const ReviewQueue = require('../models/ReviewQueue');
 const UnmatchedShareFileItem = require('../models/UnmatchedShareFileItem');
+const { broadcastClientDataChanged } = require('./socketService');
 
 const CACHE_TTL_MS = 30 * 1000;
 const cache = { rules: [], loadedAt: 0 };
@@ -158,6 +159,10 @@ const createIgnoreRule = async ({ scope, type, value, action = 'ignore', clientI
     affected = await sweepEmail(rule);
   } else if (scope === 'sharefile') {
     affected = await sweepFolderDismiss(UnmatchedShareFileItem, rule);
+  }
+
+  if (affected > 0) {
+    broadcastClientDataChanged({ reason: 'ignore_rule_swept', scope, action, affected });
   }
 
   return { rule, affected, dismissed: affected };

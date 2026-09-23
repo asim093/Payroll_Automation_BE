@@ -31,6 +31,14 @@ connectDB().then(() => {
   require('./services/emailActionJobService')
     .resumeRunningEmailActionJobs()
     .catch((error) => console.error(`[EMAIL-ACTION-JOB] resume-on-startup failed: ${error.message}`));
+
+  // Not forced — a restart doesn't itself justify skipping the modifiedAt
+  // comparison; this just makes sure a genuinely-due check (>=60 min since
+  // last, or the daily safety-net window) isn't left waiting for the next
+  // ShareFile-bridge cron tick after a deploy/restart.
+  require('./services/logiFormsIngestService')
+    .runScheduledLogiFormsCheck()
+    .catch((error) => console.error(`[LOGIFORMS-INGEST] startup check failed: ${error.message}`));
 });
 
 const app = express();

@@ -5,6 +5,7 @@ const { getEmailAttachments, isInlineImageAttachment } = require('./graphService
 const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
 const { completeFileProcessing } = require('./emailProcessor');
 const { withResilientMessageId } = require('./emailIdResolver');
+const { broadcastClientDataChanged } = require('./socketService');
 
 const claimReviewItem = async (reviewItemId, client) =>
   ReviewQueue.findOneAndUpdate(
@@ -84,6 +85,7 @@ const resolveOneReviewItem = async (reviewItem, client) => {
       emailLog.matchMethod = 'manual';
       await emailLog.save();
 
+      broadcastClientDataChanged({ reason: 'review_item_resolved_email', clientId: client._id.toString() });
       return { error: null, warning: fileProcessingWarning };
     }
 
@@ -93,6 +95,7 @@ const resolveOneReviewItem = async (reviewItem, client) => {
         status: 'moved',
         matchMethod: 'manual',
       });
+      broadcastClientDataChanged({ reason: 'review_item_resolved_file', clientId: client._id.toString() });
       return { error: null };
     }
 

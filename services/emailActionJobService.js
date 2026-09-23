@@ -1,4 +1,5 @@
 const EmailActionJob = require('../models/EmailActionJob');
+const { broadcastEmailActionJobStatus } = require('./socketService');
 
 const DEFAULT_CONCURRENCY = 4;
 
@@ -58,6 +59,7 @@ const createEmailActionJob = async ({ sourceType, mode, itemIds, operatorEmail }
     items: itemIds.map((itemId) => ({ itemId, status: 'pending' })),
     startedAt: new Date(),
   });
+  broadcastEmailActionJobStatus(toJobDto(job));
 
   // Fire-and-forget — the HTTP caller gets the jobId immediately and polls
   // for progress, same pattern as compliance report generation.
@@ -69,12 +71,14 @@ const createEmailActionJob = async ({ sourceType, mode, itemIds, operatorEmail }
 };
 
 const setItemStatus = async (jobId, itemId, patch) => {
-  await EmailActionJob.updateOne(
+  const job = await EmailActionJob.findOneAndUpdate(
     { _id: jobId, 'items.itemId': itemId },
     {
       $set: Object.fromEntries(Object.entries(patch).map(([key, value]) => [`items.$.${key}`, value])),
-    }
+    },
+    { returnDocument: 'after' }
   );
+  if (job) broadcastEmailActionJobStatus(toJobDto(job));
 };
 
 const runEmailActionJob = async (jobId) => {
@@ -135,6 +139,7 @@ const runEmailActionJob = async (jobId) => {
   finalJob.status = hasFailures ? 'completed_with_errors' : 'completed';
   finalJob.completedAt = new Date();
   await finalJob.save();
+  broadcastEmailActionJobStatus(toJobDto(finalJob));
 };
 
 // Called once at server startup — a job left 'running' means the process

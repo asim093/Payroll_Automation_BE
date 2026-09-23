@@ -143,4 +143,3 @@ services:
           property: hostport
       - key: INTERNAL_NOTIFY_SECRET
         sync: false
-     

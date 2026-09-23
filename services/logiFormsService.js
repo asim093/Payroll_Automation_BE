@@ -70,6 +70,68 @@ const parseDateSubmittedTimestamp = (value) => {
   return Number.isNaN(fallback.getTime()) ? null : fallback;
 };
 
+// Parses one already-read line into either a data row ({ein, ssn, status,
+// dateSubmitted}, or null if a required field is missing/unparseable) or a
+// skipped-row record (structured CSV parse failure, with best-effort EIN
+// attribution) — shared by readAllLogiFormsRows (in-memory, legacy path) and
+// logiFormsIngestService.js (streaming into Mongo) so the parsing/dedup-key
+// rules can never drift between the two.
+const parseLogiFormsLine = (rawLine, lineNumber, headerColumns) => {
+  const line = lineNumber === 1 ? rawLine.replace(/^﻿/, '') : rawLine;
+  if (!line.trim()) return { type: 'blank' };
+
+  let fields;
+  try {
+    [fields] = parse(line, { relax_column_count: true });
+  } catch (error) {
+    // Best-effort EIN attribution for a row that failed structured CSV
+    // parsing: EIN is a short numeric column, so a naive split on commas
+    // almost always still isolates it correctly even when a DIFFERENT
+    // column (e.g. an unbalanced quote in a name/address field) is what
+    // actually broke the parser. Only usable once the header (and so the
+    // EIN column's position) is known; a malformed header line itself can't
+    // be attributed and gets einGuess: null.
+    let einGuess = null;
+    if (headerColumns) {
+      const einColumnIndex = headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS.ein));
+      if (einColumnIndex !== -1) {
+        const looseFields = line.split(',');
+        einGuess = normalizeFein(looseFields[einColumnIndex]) || null;
+      }
+    }
+    return {
+      type: 'skipped',
+      skippedRow: {
+        lineNumber,
+        snippet: line.length > 200 ? `${line.slice(0, 200)}…` : line,
+        error: error.message,
+        einGuess,
+      },
+    };
+  }
+
+  if (lineNumber === 1) {
+    const parsedHeaderColumns = fields.map((header) => normalizeHeader(header));
+    for (const [, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
+      if (!parsedHeaderColumns.includes(normalizeHeader(expectedHeader))) {
+        return { type: 'invalid_header', missingHeader: expectedHeader };
+      }
+    }
+    return { type: 'header', headerColumns: parsedHeaderColumns };
+  }
+
+  const columnIndex = (field) => headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS[field]));
+  const ein = normalizeFein(fields[columnIndex('ein')]);
+  const dateSubmitted = parseDateSubmittedTimestamp(fields[columnIndex('dateSubmitted')]);
+  const ssn = normalizeSsn(fields[columnIndex('ssn')]);
+  const rawStatus = fields[columnIndex('status')];
+  const status = rawStatus === null || rawStatus === undefined ? '' : String(rawStatus).trim();
+
+  if (!dateSubmitted || !ssn || !status) return { type: 'incomplete' };
+
+  return { type: 'data', row: { ein, ssn, status, dateSubmitted } };
+};
+
 const readAllLogiFormsRows = (localFilePath) =>
   new Promise((resolve, reject) => {
     if (!fs.existsSync(localFilePath)) {
@@ -90,58 +152,28 @@ const readAllLogiFormsRows = (localFilePath) =>
 
     rl.on('line', (rawLine) => {
       lineNumber += 1;
-      const line = lineNumber === 1 ? rawLine.replace(/^﻿/, '') : rawLine;
-      if (!line.trim()) return;
+      const parsed = parseLogiFormsLine(rawLine, lineNumber, headerColumns);
 
-      let fields;
-      try {
-        [fields] = parse(line, { relax_column_count: true });
-      } catch (error) {
-        // Best-effort EIN attribution for a row that failed structured CSV
-        // parsing: EIN is a short numeric column, so a naive split on commas
-        // almost always still isolates it correctly even when a DIFFERENT
-        // column (e.g. an unbalanced quote in a name/address field) is what
-        // actually broke the parser. Only usable once the header (and so the
-        // EIN column's position) is known; a malformed header line itself
-        // can't be attributed and gets einGuess: null.
-        let einGuess = null;
-        if (headerColumns) {
-          const einColumnIndex = headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS.ein));
-          if (einColumnIndex !== -1) {
-            const looseFields = line.split(',');
-            einGuess = normalizeFein(looseFields[einColumnIndex]) || null;
-          }
-        }
-        skippedRows.push({
-          lineNumber,
-          snippet: line.length > 200 ? `${line.slice(0, 200)}…` : line,
-          error: error.message,
-          einGuess,
-        });
+      if (parsed.type === 'blank' || parsed.type === 'incomplete') return;
+
+      if (parsed.type === 'skipped') {
+        skippedRows.push(parsed.skippedRow);
         return;
       }
 
-      if (lineNumber === 1) {
-        headerColumns = fields.map((header) => normalizeHeader(header));
-        for (const [, expectedHeader] of Object.entries(EXPECTED_HEADERS)) {
-          if (!headerColumns.includes(normalizeHeader(expectedHeader))) {
-            rl.close();
-            reject(new Error(`LogiForms file is missing required column "${expectedHeader}": ${localFilePath}`));
-          }
-        }
+      if (parsed.type === 'invalid_header') {
+        rl.close();
+        reject(new Error(`LogiForms file is missing required column "${parsed.missingHeader}": ${localFilePath}`));
+        return;
+      }
+
+      if (parsed.type === 'header') {
+        headerColumns = parsed.headerColumns;
         return;
       }
 
       sawAnyDataLine = true;
-      const columnIndex = (field) => headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS[field]));
-      const ein = normalizeFein(fields[columnIndex('ein')]);
-      const dateSubmitted = parseDateSubmittedTimestamp(fields[columnIndex('dateSubmitted')]);
-      const ssn = normalizeSsn(fields[columnIndex('ssn')]);
-      const rawStatus = fields[columnIndex('status')];
-      const status = rawStatus === null || rawStatus === undefined ? '' : String(rawStatus).trim();
-
-      if (!dateSubmitted || !ssn || !status) return;
-
+      const { ein, ssn, status, dateSubmitted } = parsed.row;
       const key = `${ein}:${ssn}`;
       const existing = bestByKey.get(key);
       if (!existing || dateSubmitted.getTime() >= existing.dateSubmitted.getTime()) {
@@ -294,4 +326,8 @@ module.exports = {
   filterLogiFormsRecordsByFein,
   parseLogiFormsCsv,
   attributeSkippedRows,
+  parseLogiFormsLine,
+  normalizeFein,
+  normalizeSsn,
+  EXPECTED_HEADERS,
 };

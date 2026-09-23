@@ -44,6 +44,13 @@ const systemStatusSchema = new mongoose.Schema(
       type: processRunSchema,
       default: () => ({}),
     },
+    // Reuses the same generic run-lock (isRunning/runStartedAt/lastRunAt)
+    // that mailSync/shareFileBridge already use, via processRunner.js's
+    // runGuardedProcess — see logiFormsIngestService.js.
+    logiFormsIngest: {
+      type: processRunSchema,
+      default: () => ({}),
+    },
     lastEmailScanAt: {
       type: Date,
       default: null,

@@ -9,6 +9,7 @@ const { generateComplianceReportsForMultipleClients } = require('../services/com
 const { downloadDropboxFileBuffer } = require('../services/dropboxService');
 const { paginate, isPaginationRequested, DEFAULT_LIMIT, MAX_LIMIT } = require('../utils/paginate');
 const { createJob, getJob, getActiveJob, recordResult, setJobWarnings, markJobFailed } = require('../services/complianceReportGenerationJobs');
+const { getIngestStatus } = require('../services/logiFormsIngestService');
 
 // A run's period isn't stored as its own field — it's derived from the
 // min/max weekEndingDate already present in weeklyBreakdown, so there's no
@@ -108,6 +109,19 @@ const generateReports = async (req, res) => {
     return res.status(400).json({ error: 'clientIds must be a non-empty array' });
   }
 
+  // Checked here (before createJob) so an attempt made while a new LogiForms
+  // file is being ingested gets an immediate, clear response — not a job
+  // that gets created and then fails once the background work starts.
+  const ingestStatus = await getIngestStatus();
+  if (ingestStatus?.status === 'ingesting') {
+    return res.status(409).json({
+      error:
+        'Compliance report generation is temporarily paused — a new LogiForms data file is currently being processed' +
+        (ingestStatus.lastIngestStartedAt ? ` (started at ${new Date(ingestStatus.lastIngestStartedAt).toLocaleTimeString()})` : '') +
+        '. This usually takes up to 10 minutes. Please try again shortly.',
+    });
+  }
+
   const jobId = await createJob(clientIds);
   res.json({ success: true, jobId });
 
@@ -142,9 +156,7 @@ const getActiveGenerateStatus = async (req, res) => {
   res.json({ active: true, ...job });
 };
 
-// Lists every client (not just active) so a report can be reviewed/generated
-// for a client before it's activated — the Generate flow itself warns about
-// inactive/no-email clients rather than hiding them from this list.
+
 const getComplianceReportStatus = async (req, res, next) => {
   try {
     const clients = await Client.find({})

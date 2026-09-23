@@ -6,6 +6,7 @@ const { isProcessDue } = require('./services/scanThrottle');
 const { runMailSyncOnce } = require('./services/mailSyncRunner');
 const { runShareFileBridgeOnce } = require('./services/shareFileBridgeRunner');
 const { retryPendingFolderSetups } = require('./services/folderSetupRetryService');
+const { runScheduledLogiFormsCheck } = require('./services/logiFormsIngestService');
 
 const TICK_SCHEDULE = '*/5 * * * *';
 
@@ -35,6 +36,19 @@ const tick = async () => {
     await retryPendingFolderSetups();
   } catch (error) {
     console.error(`[SCHEDULER] Folder-setup retry failed: ${error.message}`);
+  }
+
+  // Piggybacks on this same 5-minute tick rather than its own scheduled job
+  // — its own ~60-min throttle (isProcessDue('logiFormsIngest', ...) inside
+  // runScheduledLogiFormsCheck) is what actually enforces the real interval,
+  // so most ticks this just no-ops.
+  try {
+    const result = await runScheduledLogiFormsCheck();
+    if (!result?.skipped) {
+      console.log(`[SCHEDULER] LogiForms check: ${JSON.stringify(result)}`);
+    }
+  } catch (error) {
+    console.error(`[SCHEDULER] LogiForms check failed: ${error.message}`);
   }
 };
 

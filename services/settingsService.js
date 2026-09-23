@@ -14,6 +14,7 @@ const DEFAULTS = {
   applicantReminderFromAddress: '',
   mailSyncIntervalMinutes: 5,
   shareFileBridgeIntervalMinutes: 5,
+  logiFormsCheckIntervalMinutes: 60,
 };
 
 

@@ -84,6 +84,12 @@ const settingsSchema = new mongoose.Schema(
       min: 5,
       max: 180,
     },
+    logiFormsCheckIntervalMinutes: {
+      type: Number,
+      default: 60,
+      min: 5,
+      max: 1440,
+    },
   },
   { timestamps: true }
 );

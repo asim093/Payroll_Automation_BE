@@ -5,18 +5,13 @@ const Client = require('../models/Client');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { findLatestPayrollFile, downloadDropboxFileToLocal, uploadReportFile } = require('./dropboxService');
 const { parsePayrollFile } = require('./payrollFileParserService');
-const {
-  fetchLogiFormsDataForClient,
-  fetchAllLogiFormsRecords,
-  filterLogiFormsRecordsByFein,
-  attributeSkippedRows,
-} = require('./logiFormsService');
 const { calculateComplianceStatus, summarizeByWeek } = require('./complianceCalculationService');
 const { generateAdminReport, generateClientReport, saveReportToFile } = require('./complianceReportGeneratorService');
 const { createComplianceReportDraft } = require('./complianceEmailDraftService');
 const { upsertFromComplianceRun } = require('./applicantReminderService');
 const { upsertCustomerReportEmailFromRun } = require('./customerReportEmailService');
 const { getSettings } = require('./settingsService');
+const { getIngestStatus, fetchLogiFormsDataForClient } = require('./logiFormsIngestService');
 const { applyMergeFields } = require('../utils/applyMergeFields');
 const { formatError } = require('../utils/formatError');
 
@@ -43,6 +38,23 @@ const resolveReportsFolderSegment = (dropboxPath) => {
   return `${basePath}/${COMPLIANCE_REPORTS_SUBFOLDER}`;
 };
 
+// Defense-in-depth: complianceReportController.js's generateReports already
+// checks this before creating a job (so a request made during ingestion gets
+// an immediate 409 with zero job created), but ingestion can also START
+// mid-batch for a multi-client run already in progress — this second check
+// catches that case too, surfacing as a normal per-client failure result
+// rather than corrupting a report with a half-swapped LogiForms collection.
+const assertLogiFormsNotIngesting = async () => {
+  const ingestStatus = await getIngestStatus();
+  if (ingestStatus?.status === 'ingesting') {
+    const error = new Error(
+      'Compliance report generation is temporarily paused — a new LogiForms data file is currently being processed. This usually takes up to 10 minutes. Please try again shortly.'
+    );
+    error.statusCode = 409;
+    throw error;
+  }
+};
+
 const logFailure = async (clientId, error) => {
   try {
     await ComplianceReportLog.create({
@@ -57,18 +69,17 @@ const logFailure = async (clientId, error) => {
   }
 };
 
-// options.logiFormsRecords: when a batch run has already fetched the whole
-// LogiForms file once (see generateComplianceReportsForMultipleClients),
-// pass the shared parsed rows here and this filters by FEIN in memory
-// instead of re-downloading/re-parsing the same file per client. Omitted
-// (e.g. a single-client call, or existing tests that stub
-// fetchLogiFormsDataForClient directly) falls back to the original per-client
-// fetch, unchanged.
-const generateComplianceReportForClient = async (clientId, options = {}) => {
+// LogiForms data now comes from a single indexed query against the
+// LogiFormsRecord collection (kept current by the hourly/daily ingest
+// cron — see logiFormsIngestService.js) instead of downloading and parsing
+// the full ~758K-line ShareFile export on every generation. This function no
+// longer touches ShareFile at all; only the ingest cron does.
+const generateComplianceReportForClient = async (clientId) => {
   let tempDir = null;
   let client = null;
 
   try {
+    await assertLogiFormsNotIngesting();
     client = await Client.findById(clientId);
     if (!client) {
       throw new Error(`Client not found: ${clientId}`);
@@ -91,22 +102,11 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
 
     const payrollRecords = await parsePayrollFile(localPayrollPath);
 
-    let logiFormsData;
-    let logiFormsSkippedRows = [];
-    let logiFormsRelevantSkippedRows = [];
-    let logiFormsUnattributableSkippedRows = [];
-    if (options.logiFormsRecords) {
-      logiFormsData = filterLogiFormsRecordsByFein(options.logiFormsRecords, client.fein);
-      logiFormsSkippedRows = options.logiFormsSkippedRows || [];
-      ({ relevantSkippedRows: logiFormsRelevantSkippedRows, unattributableSkippedRows: logiFormsUnattributableSkippedRows } =
-        attributeSkippedRows(logiFormsSkippedRows, client.fein));
-    } else {
-      const fetched = await fetchLogiFormsDataForClient(client.fein);
-      logiFormsData = fetched.records;
-      logiFormsSkippedRows = fetched.skippedRows;
-      logiFormsRelevantSkippedRows = fetched.relevantSkippedRows;
-      logiFormsUnattributableSkippedRows = fetched.unattributableSkippedRows;
-    }
+    const fetched = await fetchLogiFormsDataForClient(client.fein);
+    const logiFormsData = fetched.records;
+    const logiFormsSkippedRows = fetched.skippedRows;
+    const logiFormsRelevantSkippedRows = fetched.relevantSkippedRows;
+    const logiFormsUnattributableSkippedRows = fetched.unattributableSkippedRows;
 
     if (logiFormsRelevantSkippedRows.length > 0 || logiFormsUnattributableSkippedRows.length > 0) {
       console.warn(
@@ -277,30 +277,25 @@ const DEFAULT_GENERATION_CONCURRENCY = 1;
 // Bounded-concurrency worker pool: at most `concurrency` clients are ever
 // being generated at once (kept low deliberately — every client's run can
 // end with a Graph draft created in the SAME single connected mailbox, so
-// concurrency stays modest to avoid bursting that one mailbox's rate limit,
-// not because Dropbox/ShareFile themselves need it). The LogiForms CSV is
-// fetched exactly once up front and shared (filtered per FEIN in memory)
-// instead of every client re-downloading the identical file. Results are
-// returned in the original submission order regardless of completion order;
-// onResult (optional) fires as each client finishes, for progress tracking
-// that reflects real completions rather than submission order.
+// concurrency stays modest to avoid bursting that one mailbox's rate limit).
+// Each client now runs its own cheap indexed LogiForms query independently
+// (see fetchLogiFormsDataForClient in logiFormsIngestService.js) — there is
+// no shared file-wide fetch to coordinate any more, since a single query is
+// on the order of ~100ms rather than the ~150-170s a full-file parse used to
+// cost. Results are returned in the original submission order regardless of
+// completion order; onResult (optional) fires as each client finishes.
 const generateComplianceReportsForMultipleClients = async (
   clientIds,
-  {
-    concurrency = DEFAULT_GENERATION_CONCURRENCY,
-    onResult,
-    onLogiFormsWarnings,
-    logiFormsRecords: providedLogiFormsRecords,
-  } = {}
+  { concurrency = DEFAULT_GENERATION_CONCURRENCY, onResult, onLogiFormsWarnings } = {}
 ) => {
-  let logiFormsRecords = providedLogiFormsRecords;
-  let logiFormsSkippedRows = [];
-  if (!logiFormsRecords) {
-    const fetched = await fetchAllLogiFormsRecords();
-    logiFormsRecords = fetched.records;
-    logiFormsSkippedRows = fetched.skippedRows;
-    if (onLogiFormsWarnings && fetched.skippedRows.length > 0) {
-      onLogiFormsWarnings(fetched.skippedRows);
+  await assertLogiFormsNotIngesting();
+
+  // File-wide skipped-row warnings for the job as a whole (Part 1(b)) — read
+  // once from the ingest status doc rather than re-parsing anything.
+  if (onLogiFormsWarnings) {
+    const ingestStatus = await getIngestStatus();
+    if (ingestStatus?.skippedRows?.length > 0) {
+      onLogiFormsWarnings(ingestStatus.skippedRows);
     }
   }
 
@@ -313,7 +308,7 @@ const generateComplianceReportsForMultipleClients = async (
       nextIndex += 1;
       if (currentIndex >= clientIds.length) return;
 
-      const result = await generateComplianceReportForClient(clientIds[currentIndex], { logiFormsRecords, logiFormsSkippedRows });
+      const result = await generateComplianceReportForClient(clientIds[currentIndex]);
       results[currentIndex] = result;
       if (onResult) onResult(result);
     }

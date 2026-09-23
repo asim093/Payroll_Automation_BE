@@ -9,11 +9,14 @@ const Client = require('../models/Client');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { uploadFileToDropbox, deleteDropboxFolder, findLatestPayrollFile } = require('../services/dropboxService');
 
-// Monkey-patch logiFormsService BEFORE the orchestrator is required, so the
-// orchestrator's own `const { fetchLogiFormsDataForClient } = require(...)`
+// Monkey-patch logiFormsIngestService BEFORE the orchestrator is required, so
+// the orchestrator's own `const { fetchLogiFormsDataForClient } = require(...)`
 // destructures our stub off the (already-patched) cached module.exports
-// object — no production file is edited on disk.
-const logiFormsService = require('../services/logiFormsService');
+// object — no production file is edited on disk. (Phase 4: the orchestrator
+// now reads LogiForms data from the ingested Mongo collection via
+// logiFormsIngestService.js, not the old live-parse-from-ShareFile path in
+// logiFormsService.js.)
+const logiFormsIngestService = require('../services/logiFormsIngestService');
 
 const CLIENT_NAME = 'ZZZ Test Client';
 const FEIN = '11-1111111';
@@ -34,9 +37,9 @@ const FAKE_LOGIFORMS_DATA = [
   { ssn: '000000003', status: 'Certified', dateSubmitted: new Date('2026-08-12') },
 ];
 
-logiFormsService.fetchLogiFormsDataForClient = async (fein) => {
-  console.log(`[STUB] fetchLogiFormsDataForClient called with fein="${fein}" -> returning ${FAKE_LOGIFORMS_DATA.length} fake rows (real ShareFile LogiForms CSV NOT touched).`);
-  return { records: FAKE_LOGIFORMS_DATA, skippedRows: [] };
+logiFormsIngestService.fetchLogiFormsDataForClient = async (fein) => {
+  console.log(`[STUB] fetchLogiFormsDataForClient called with fein="${fein}" -> returning ${FAKE_LOGIFORMS_DATA.length} fake rows (real ingested LogiFormsRecord collection NOT touched).`);
+  return { records: FAKE_LOGIFORMS_DATA, skippedRows: [], relevantSkippedRows: [], unattributableSkippedRows: [] };
 };
 
 const { generateComplianceReportForClient } = require('../services/complianceReportOrchestratorService');
