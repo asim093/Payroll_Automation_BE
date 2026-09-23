@@ -5,7 +5,12 @@ const Client = require('../models/Client');
 const ComplianceReportLog = require('../models/ComplianceReportLog');
 const { findLatestPayrollFile, downloadDropboxFileToLocal, uploadReportFile } = require('./dropboxService');
 const { parsePayrollFile } = require('./payrollFileParserService');
-const { fetchLogiFormsDataForClient, fetchAllLogiFormsRecords, filterLogiFormsRecordsByFein } = require('./logiFormsService');
+const {
+  fetchLogiFormsDataForClient,
+  fetchAllLogiFormsRecords,
+  filterLogiFormsRecordsByFein,
+  attributeSkippedRows,
+} = require('./logiFormsService');
 const { calculateComplianceStatus, summarizeByWeek } = require('./complianceCalculationService');
 const { generateAdminReport, generateClientReport, saveReportToFile } = require('./complianceReportGeneratorService');
 const { createComplianceReportDraft } = require('./complianceEmailDraftService');
@@ -88,12 +93,25 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
 
     let logiFormsData;
     let logiFormsSkippedRows = [];
+    let logiFormsRelevantSkippedRows = [];
+    let logiFormsUnattributableSkippedRows = [];
     if (options.logiFormsRecords) {
       logiFormsData = filterLogiFormsRecordsByFein(options.logiFormsRecords, client.fein);
+      logiFormsSkippedRows = options.logiFormsSkippedRows || [];
+      ({ relevantSkippedRows: logiFormsRelevantSkippedRows, unattributableSkippedRows: logiFormsUnattributableSkippedRows } =
+        attributeSkippedRows(logiFormsSkippedRows, client.fein));
     } else {
       const fetched = await fetchLogiFormsDataForClient(client.fein);
       logiFormsData = fetched.records;
       logiFormsSkippedRows = fetched.skippedRows;
+      logiFormsRelevantSkippedRows = fetched.relevantSkippedRows;
+      logiFormsUnattributableSkippedRows = fetched.unattributableSkippedRows;
+    }
+
+    if (logiFormsRelevantSkippedRows.length > 0 || logiFormsUnattributableSkippedRows.length > 0) {
+      console.warn(
+        `[LOGIFORMS-PARSE] Data quality notice (not a failure) for client "${client.name}": ${logiFormsSkippedRows.length} row(s) skipped file-wide, ${logiFormsRelevantSkippedRows.length} of those belong to this client's FEIN (${client.fein}), ${logiFormsUnattributableSkippedRows.length} could not be attributed to any client's FEIN — report generated correctly using all other valid rows.`
+      );
     }
 
     const calculatedRecords = await calculateComplianceStatus(payrollRecords, logiFormsData);
@@ -126,6 +144,7 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
     const totalEmployees = calculatedRecords.length;
     const completedCount = calculatedRecords.filter((record) => record.isComplete).length;
     const incompleteCount = totalEmployees - completedCount;
+    const duplicateSsnCount = calculatedRecords.filter((record) => record.duplicateSsnGroupSize > 1).length;
 
     // The Client-type log is created before the email step (reversed from
     // the historical order) because the new staging path needs this log's
@@ -142,6 +161,7 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
       totalEmployees,
       completedCount,
       incompleteCount,
+      duplicateSsnCount,
       success: true,
       // Same weeklyStats array already computed above and passed into both
       // XLSX builders — persisted on both log types so the drill-down
@@ -211,6 +231,7 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
       totalEmployees,
       completedCount,
       incompleteCount,
+      duplicateSsnCount,
       emailStatus,
       success: true,
       weeklyBreakdown: weeklyStats,
@@ -234,8 +255,11 @@ const generateComplianceReportForClient = async (clientId, options = {}) => {
       totalEmployees,
       completedCount,
       incompleteCount,
+      duplicateSsnCount,
       emailStatus,
       logiFormsSkippedRows,
+      logiFormsSkippedRowsForClient: logiFormsRelevantSkippedRows.length,
+      logiFormsSkippedRowsUnattributable: logiFormsUnattributableSkippedRows.length,
     };
   } catch (error) {
     console.error(`[COMPLIANCE-REPORT-ORCHESTRATOR] Failed for client ${clientId}: ${formatError(error)}`);
@@ -270,9 +294,11 @@ const generateComplianceReportsForMultipleClients = async (
   } = {}
 ) => {
   let logiFormsRecords = providedLogiFormsRecords;
+  let logiFormsSkippedRows = [];
   if (!logiFormsRecords) {
     const fetched = await fetchAllLogiFormsRecords();
     logiFormsRecords = fetched.records;
+    logiFormsSkippedRows = fetched.skippedRows;
     if (onLogiFormsWarnings && fetched.skippedRows.length > 0) {
       onLogiFormsWarnings(fetched.skippedRows);
     }
@@ -287,7 +313,7 @@ const generateComplianceReportsForMultipleClients = async (
       nextIndex += 1;
       if (currentIndex >= clientIds.length) return;
 
-      const result = await generateComplianceReportForClient(clientIds[currentIndex], { logiFormsRecords });
+      const result = await generateComplianceReportForClient(clientIds[currentIndex], { logiFormsRecords, logiFormsSkippedRows });
       results[currentIndex] = result;
       if (onResult) onResult(result);
     }

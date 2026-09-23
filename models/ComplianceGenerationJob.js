@@ -8,8 +8,11 @@ const jobResultSchema = new mongoose.Schema(
     totalEmployees: Number,
     completedCount: Number,
     incompleteCount: Number,
+    duplicateSsnCount: Number,
     emailStatus: String,
     logiFormsSkippedRows: { type: [Object], default: undefined },
+    logiFormsSkippedRowsForClient: Number,
+    logiFormsSkippedRowsUnattributable: Number,
     error: String,
   },
   { _id: false }

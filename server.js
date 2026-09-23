@@ -27,7 +27,11 @@ const columnMappingRoutes = require('./routes/columnMappingRoutes');
 const complianceStatusRoutes = require('./routes/complianceStatusRoutes');
 const ingestionDraftsRoutes = require('./routes/ingestionDraftsRoutes');
 
-connectDB();
+connectDB().then(() => {
+  require('./services/emailActionJobService')
+    .resumeRunningEmailActionJobs()
+    .catch((error) => console.error(`[EMAIL-ACTION-JOB] resume-on-startup failed: ${error.message}`));
+});
 
 const app = express();
 

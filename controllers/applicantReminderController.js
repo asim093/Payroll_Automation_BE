@@ -5,7 +5,7 @@ const {
   dismissReminders,
   undismissReminders,
 } = require('../services/applicantReminderService');
-const { createJob, getJob, recordResult } = require('../services/backgroundJobTracker');
+const { createEmailActionJob, getEmailActionJob, getActiveEmailActionJob } = require('../services/emailActionJobService');
 
 const requireIds = (req, res) => {
   const { ids } = req.body || {};
@@ -50,10 +50,12 @@ exports.actionApplicantReminders = async (req, res, next) => {
   }
 };
 
-// "Send All"/"Draft All" from the View Emails screen — same actionReminders
-// work as the synchronous /action endpoint, just detached from the HTTP
-// request via a background job (identical pattern to compliance report
-// generation) so a large batch can't time out the request.
+// "Send All"/"Draft All" from the View Emails screen — DB-backed job
+// (EmailActionJob) instead of the old in-memory tracker: survives a server
+// restart, tracks per-item status live, and is resumable. The mode==='send'
+// safety gate lives inside createEmailActionJob and runs BEFORE the job
+// document is created, so attempting Send All today (Mail.Send not yet
+// granted) fails with a clean 400 and creates nothing at all.
 exports.actionApplicantRemindersJob = async (req, res, next) => {
   try {
     const ids = requireIds(req, res);
@@ -61,28 +63,32 @@ exports.actionApplicantRemindersJob = async (req, res, next) => {
     const operatorEmail = req.headers['x-user-email'] || '';
     const mode = req.body?.mode === 'send' ? 'send' : 'draft';
 
-    const jobId = createJob(ids);
+    const jobId = await createEmailActionJob({ sourceType: 'applicant_reminder', mode, itemIds: ids, operatorEmail });
     res.json({ success: true, jobId });
-
-    actionReminders(ids, operatorEmail, mode, (result) => recordResult(jobId, result)).catch((error) => {
-      console.error(`[APPLICANT-REMINDERS] actionReminders job rejected unexpectedly: ${error.message}`);
-      const job = getJob(jobId);
-      const alreadyReported = job ? job.completed : 0;
-      for (let i = alreadyReported; i < ids.length; i += 1) {
-        recordResult(jobId, { id: ids[i], status: 'failed', error: error.message });
-      }
-    });
   } catch (error) {
     next(error);
   }
 };
 
-exports.getApplicantRemindersJobStatus = (req, res) => {
-  const job = getJob(req.params.jobId);
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found (it may have already expired).' });
+exports.getApplicantRemindersJobStatus = async (req, res, next) => {
+  try {
+    const job = await getEmailActionJob(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found (it may have already expired).' });
+    }
+    res.json(job);
+  } catch (error) {
+    next(error);
   }
-  res.json(job);
+};
+
+exports.getActiveApplicantRemindersJob = async (req, res, next) => {
+  try {
+    const job = await getActiveEmailActionJob('applicant_reminder');
+    res.json({ active: Boolean(job), job });
+  } catch (error) {
+    next(error);
+  }
 };
 
 exports.dismissApplicantReminders = async (req, res, next) => {

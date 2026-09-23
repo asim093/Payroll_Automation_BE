@@ -114,7 +114,11 @@ const buildApplicationSheet = (worksheet, records, includeStatusAndNotes) => {
     };
     if (includeStatusAndNotes) {
       row.status = record.status;
-      row.notes = record.notes || '';
+      const duplicateNote =
+        record.duplicateSsnGroupSize > 1
+          ? `Duplicate SSN — ${record.duplicateSsnGroupSize} records, review recommended`
+          : '';
+      row.notes = [record.notes, duplicateNote].filter(Boolean).join(' | ');
     }
     worksheet.addRow(row);
   }

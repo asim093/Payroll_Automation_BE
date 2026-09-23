@@ -41,17 +41,32 @@ const calculateComplianceStatus = async (payrollRecords, logiFormsData) => {
     complianceStatuses.filter((entry) => entry.isComplete).map((entry) => normalizeStatusValue(entry.statusValue))
   );
 
+  // Duplicate-SSN detection only (no merge/drop): some clients' payroll
+  // exports legitimately have one row per job assignment for the same
+  // person, others have real data-entry duplicates — telling those apart
+  // isn't a rule this code can safely automate, so every row is kept as-is
+  // and only flagged for a human to review. Single pass over the records
+  // already in hand, no extra DB/network calls.
+  const ssnCounts = new Map();
+  for (const record of payrollRecords) {
+    const ssn = normalizeSsn(record.ssn);
+    if (!ssn) continue;
+    ssnCounts.set(ssn, (ssnCounts.get(ssn) || 0) + 1);
+  }
+
   return payrollRecords.map((record) => {
     const matchedStatus = logiFormsBySsn.get(normalizeSsn(record.ssn))?.status;
 
     const status = matchedStatus || 'Incomplete';
     const isComplete = matchedStatus ? completeStatusValues.has(normalizeStatusValue(matchedStatus)) : false;
+    const duplicateSsnGroupSize = ssnCounts.get(normalizeSsn(record.ssn)) || 1;
 
     return {
       ...record,
       status,
       isComplete,
       weekEndingDate: getWeekEndingSunday(record.startDate),
+      duplicateSsnGroupSize,
     };
   });
 };

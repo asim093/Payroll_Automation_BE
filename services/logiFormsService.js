@@ -97,10 +97,26 @@ const readAllLogiFormsRows = (localFilePath) =>
       try {
         [fields] = parse(line, { relax_column_count: true });
       } catch (error) {
+        // Best-effort EIN attribution for a row that failed structured CSV
+        // parsing: EIN is a short numeric column, so a naive split on commas
+        // almost always still isolates it correctly even when a DIFFERENT
+        // column (e.g. an unbalanced quote in a name/address field) is what
+        // actually broke the parser. Only usable once the header (and so the
+        // EIN column's position) is known; a malformed header line itself
+        // can't be attributed and gets einGuess: null.
+        let einGuess = null;
+        if (headerColumns) {
+          const einColumnIndex = headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS.ein));
+          if (einColumnIndex !== -1) {
+            const looseFields = line.split(',');
+            einGuess = normalizeFein(looseFields[einColumnIndex]) || null;
+          }
+        }
         skippedRows.push({
           lineNumber,
           snippet: line.length > 200 ? `${line.slice(0, 200)}…` : line,
           error: error.message,
+          einGuess,
         });
         return;
       }
@@ -144,6 +160,13 @@ const readAllLogiFormsRows = (localFilePath) =>
         reject(new Error(`LogiForms file is empty: ${localFilePath}`));
         return;
       }
+      // Diagnostic only (Part 1c) — measures the real unique-row count after
+      // existing MAX(DateSubmitted)-per-SSN+EIN dedup, against real
+      // production files, to decide whether caching the parsed result is
+      // safe under the ~512MB memory ceiling before any caching is built.
+      console.log(
+        `[LOGIFORMS-DIAGNOSTIC] Parsed "${localFilePath}": ${lineNumber} lines read, bestByKey.size (unique EIN+SSN records after dedup) = ${bestByKey.size}, skippedRows = ${skippedRows.length}, process RSS = ${(process.memoryUsage().rss / (1024 * 1024)).toFixed(1)}MB`
+      );
       // Sort kept purely to preserve the existing "sorted desc" output
       // contract (testLogiFormsIntegration.js asserts this) — correctness no
       // longer depends on it, since duplicates are already resolved above.
@@ -157,9 +180,34 @@ const readAllLogiFormsRows = (localFilePath) =>
         };
       });
       records.sort((a, b) => b.dateSubmitted.getTime() - a.dateSubmitted.getTime());
+      if (skippedRows.length > 0) {
+        // Data quality notice, NOT a failure — the parse above already
+        // succeeded using every other row; this is purely visibility into a
+        // source-file formatting issue, previously only surfaced as a
+        // frontend toast count with nothing logged server-side at all.
+        console.warn(
+          `[LOGIFORMS-PARSE] Data quality notice (not a failure): ${skippedRows.length} row(s) in "${localFilePath}" had a formatting problem and were skipped; report generation continued using all other valid rows. Line numbers: ${skippedRows.map((row) => row.lineNumber).join(', ')}`
+        );
+      }
       resolve({ records, skippedRows });
     });
   });
+
+// Splits a file-wide skippedRows list (from readAllLogiFormsRows) into the
+// rows that best-effort attribute to ONE client's FEIN vs. rows that don't
+// attribute to any FEIN at all (a malformed header line, or the EIN column
+// itself being the corrupted field) — the latter is a genuine file-level
+// issue, not something any single client's warning should claim.
+const attributeSkippedRows = (skippedRows, fein) => {
+  const normalizedFein = normalizeFein(fein);
+  const relevantSkippedRows = [];
+  const unattributableSkippedRows = [];
+  for (const row of skippedRows) {
+    if (row.einGuess === normalizedFein) relevantSkippedRows.push(row);
+    else if (!row.einGuess) unattributableSkippedRows.push(row);
+  }
+  return { relevantSkippedRows, unattributableSkippedRows };
+};
 
 // Existing per-client contract — unchanged return shape (ein on each record
 // is the normalized TARGET fein, not necessarily the row's own, matching the
@@ -172,7 +220,8 @@ const parseLogiFormsCsv = async (localFilePath, fein) => {
   const records = allRecords
     .filter((record) => record.ein === normalizedFein)
     .map((record) => ({ ...record, ein: normalizedFein }));
-  return { records, skippedRows };
+  const { relevantSkippedRows, unattributableSkippedRows } = attributeSkippedRows(skippedRows, fein);
+  return { records, skippedRows, relevantSkippedRows, unattributableSkippedRows };
 };
 
 // Pure in-memory filter, reusing rows already fetched once for a whole batch
@@ -244,4 +293,5 @@ module.exports = {
   fetchAllLogiFormsRecords,
   filterLogiFormsRecordsByFein,
   parseLogiFormsCsv,
+  attributeSkippedRows,
 };

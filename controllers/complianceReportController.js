@@ -264,7 +264,7 @@ const getComplianceReportHistory = async (req, res, next) => {
     }
 
     const projection =
-      'generatedAt clientId reportType success totalEmployees completedCount incompleteCount emailStatus errorMessage filePath weeklyBreakdown';
+      'generatedAt clientId reportType success totalEmployees completedCount incompleteCount duplicateSsnCount emailStatus errorMessage filePath weeklyBreakdown';
 
     // grouped=true: one row per compliance run instead of one per report
     // file. Admin and Client logs from the same run always share the exact
@@ -298,6 +298,7 @@ const getComplianceReportHistory = async (req, res, next) => {
             totalEmployees: { $first: '$totalEmployees' },
             completedCount: { $first: '$completedCount' },
             incompleteCount: { $first: '$incompleteCount' },
+            duplicateSsnCount: { $first: '$duplicateSsnCount' },
             sourcePayrollFileName: { $first: '$sourcePayrollFileName' },
             sourcePayrollFilePath: { $first: '$sourcePayrollFilePath' },
             weeklyBreakdown: { $first: '$weeklyBreakdown' },
@@ -325,6 +326,7 @@ const getComplianceReportHistory = async (req, res, next) => {
             totalEmployees: 1,
             completedCount: 1,
             incompleteCount: 1,
+            duplicateSsnCount: 1,
             sourcePayrollFileName: 1,
             sourcePayrollFilePath: 1,
             weeklyBreakdown: 1,

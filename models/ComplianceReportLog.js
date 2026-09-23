@@ -66,6 +66,12 @@ const complianceReportLogSchema = new mongoose.Schema(
     incompleteCount: {
       type: Number,
     },
+    // Count of employees in this run whose SSN appears more than once in the
+    // source payroll file — flagged for human review only, never merged or
+    // dropped (duplicate-SSN handling varies too much by client to automate).
+    duplicateSsnCount: {
+      type: Number,
+    },
     emailStatus: {
       type: String,
       enum: ['Draft-Created', 'Sent', 'Failed', 'Skipped-No-Email'],

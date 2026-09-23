@@ -100,6 +100,7 @@ const buildCustomerReportEmailPayload = async ({ client, row }) => {
 // with a console-only log instead of touching Graph or Dropbox at all.
 const createCustomerReportDraftEmail = async (payload) => {
   const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+  const { fetchWithRetry } = require('./graphService');
   const { from, to, subject, body, reportFilePath } = payload || {};
 
   if (!to || !String(to).trim()) {
@@ -122,7 +123,7 @@ const createCustomerReportDraftEmail = async (payload) => {
 
   let createResponse;
   try {
-    createResponse = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
+    createResponse = await fetchWithRetry('https://graph.microsoft.com/v1.0/me/messages', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -149,6 +150,7 @@ const createCustomerReportDraftEmail = async (payload) => {
 // follows creation immediately and automatically, no review pause.
 const sendCustomerReportEmail = async (payload) => {
   const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+  const { fetchWithRetry } = require('./graphService');
   const { from, to, subject, body, reportFilePath } = payload || {};
 
   if (!to || !String(to).trim()) {
@@ -175,7 +177,7 @@ const sendCustomerReportEmail = async (payload) => {
 
   let createResponse;
   try {
-    createResponse = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
+    createResponse = await fetchWithRetry('https://graph.microsoft.com/v1.0/me/messages', {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify(messagePayload),
@@ -194,7 +196,7 @@ const sendCustomerReportEmail = async (payload) => {
 
   let sendResponse;
   try {
-    sendResponse = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
+    sendResponse = await fetchWithRetry(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
       method: 'POST',
       headers: authHeaders,
     });

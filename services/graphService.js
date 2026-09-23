@@ -477,4 +477,5 @@ module.exports = {
   renameMailFolder,
   copyEmailToFolder,
   moveEmailToFolder,
+  fetchWithRetry,
 };

@@ -91,6 +91,7 @@ const buildReminderPayload = async ({ client, toEmail }) => {
 // human, so end-user behavior is still an unattended immediate send.
 const sendReminderEmail = async (payload) => {
   const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+  const { fetchWithRetry } = require('./graphService');
   const { from, to, subject, body } = payload || {};
 
   if (!to || !String(to).trim()) {
@@ -113,7 +114,7 @@ const sendReminderEmail = async (payload) => {
   // Step 1: create the message.
   let createResponse;
   try {
-    createResponse = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
+    createResponse = await fetchWithRetry('https://graph.microsoft.com/v1.0/me/messages', {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify(messagePayload),
@@ -137,7 +138,7 @@ const sendReminderEmail = async (payload) => {
   // from "never created at all".
   let sendResponse;
   try {
-    sendResponse = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
+    sendResponse = await fetchWithRetry(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
       method: 'POST',
       headers: authHeaders,
     });
@@ -172,6 +173,7 @@ const sendReminderEmail = async (payload) => {
 // with a console-only log instead of touching Graph at all.
 const createGraphDraftEmail = async (payload) => {
   const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+  const { fetchWithRetry } = require('./graphService');
   const { from, to, subject, body } = payload || {};
 
   if (!to || !String(to).trim()) {
@@ -188,7 +190,7 @@ const createGraphDraftEmail = async (payload) => {
 
   let createResponse;
   try {
-    createResponse = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
+    createResponse = await fetchWithRetry('https://graph.microsoft.com/v1.0/me/messages', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
