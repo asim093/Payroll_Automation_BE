@@ -2,6 +2,9 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Client = require('../models/Client');
 const ApplicantReminder = require('../models/ApplicantReminder');
+const { paginate, isPaginationRequested } = require('../utils/paginate');
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const RESETTABLE_STATUSES = ['pending', 'failed', 'skipped_no_email', 'skipped_no_form_url', 'superseded'];
 const SUPERSEDABLE_STATUSES = ['pending', 'failed', 'skipped_no_email', 'skipped_no_form_url'];
@@ -135,7 +138,7 @@ const toReminderPopulatedShape = (row) => {
   return { ...rest, clientId: client ? { _id: client._id, name: client.name, wotcFormUrl: client.wotcFormUrl } : row.clientId };
 };
 
-const listReminders = ({ clientId, status, sortBy, sortDir, complianceReportLogId } = {}) => {
+const listReminders = async ({ clientId, status, sortBy, sortDir, complianceReportLogId, search, page, limit } = {}) => {
   const query = {};
   if (clientId) query.clientId = clientId;
   // 'all'/unset means "everything except dismissed" — a dismissed row is a
@@ -158,6 +161,14 @@ const listReminders = ({ clientId, status, sortBy, sortDir, complianceReportLogI
     query.lastComplianceReportLogId = { $in: logIds };
   }
 
+  const searchTerm = String(search || '').trim();
+  if (searchTerm) {
+    const regex = new RegExp(escapeRegExp(searchTerm), 'i');
+    query.$or = [{ employeeName: regex }, { employeeEmail: regex }];
+  }
+
+  const reqQuery = { sortBy, sortDir, page, limit };
+
   // Sorting by the client's name means sorting by a field on the referenced
   // Client document, not on ApplicantReminder itself — same aggregation
   // approach as matchingRuleController/complianceReportController's
@@ -167,21 +178,34 @@ const listReminders = ({ clientId, status, sortBy, sortDir, complianceReportLogI
     const dir = sortDir === 'desc' ? -1 : 1;
     const aggFilter = { ...query };
     if (aggFilter.clientId) aggFilter.clientId = new mongoose.Types.ObjectId(aggFilter.clientId);
-    return ApplicantReminder.aggregate([
+    const pipeline = [
       { $match: aggFilter },
       { $lookup: { from: 'clients', localField: 'clientId', foreignField: '_id', as: 'client' } },
       { $unwind: { path: '$client', preserveNullAndEmptyArrays: true } },
       { $sort: { 'client.name': dir, complianceRunAt: -1, createdAt: -1 } },
-    ]).then((rows) => rows.map(toReminderPopulatedShape));
+    ];
+
+    if (!isPaginationRequested(reqQuery)) {
+      const rows = await ApplicantReminder.aggregate(pipeline);
+      return rows.map(toReminderPopulatedShape);
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
+    const skip = (pageNum - 1) * limitNum;
+    const [rows, totalResult] = await Promise.all([
+      ApplicantReminder.aggregate([...pipeline, { $skip: skip }, { $limit: limitNum }]),
+      ApplicantReminder.aggregate([...pipeline, { $count: 'total' }]),
+    ]);
+    const total = totalResult[0]?.total || 0;
+    return { items: rows.map(toReminderPopulatedShape), total, page: pageNum, limit: limitNum };
   }
 
-  const sortField = sortBy && REMINDER_SORT_FIELDS[sortBy];
-  const sort = sortField ? { [sortField]: sortDir === 'desc' ? -1 : 1 } : REMINDER_DEFAULT_SORT;
-
-  return ApplicantReminder.find(query)
-    .populate('clientId', 'name wotcFormUrl')
-    .sort(sort)
-    .lean();
+  const dbQuery = ApplicantReminder.find(query).populate('clientId', 'name wotcFormUrl');
+  return paginate(dbQuery, ApplicantReminder, query, reqQuery, {
+    sortFields: REMINDER_SORT_FIELDS,
+    defaultSort: REMINDER_DEFAULT_SORT,
+  });
 };
 
 const loadActionableRow = async (id) => {

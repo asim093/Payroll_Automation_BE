@@ -7,7 +7,7 @@ const CustomerReportEmail = require('../models/CustomerReportEmail');
 const ApplicantReminder = require('../models/ApplicantReminder');
 const { generateComplianceReportsForMultipleClients } = require('../services/complianceReportOrchestratorService');
 const { downloadDropboxFileBuffer } = require('../services/dropboxService');
-const { paginate, isPaginationRequested } = require('../utils/paginate');
+const { paginate, isPaginationRequested, DEFAULT_LIMIT, MAX_LIMIT } = require('../utils/paginate');
 const { createJob, getJob, getActiveJob, recordResult, setJobWarnings, markJobFailed } = require('../services/complianceReportGenerationJobs');
 
 // A run's period isn't stored as its own field — it's derived from the
@@ -505,7 +505,16 @@ const getComplianceReportLogEmployees = async (req, res, next) => {
         return shaped;
       });
 
-    res.status(200).json(rows);
+    if (!isPaginationRequested(req.query)) {
+      return res.status(200).json(rows);
+    }
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || DEFAULT_LIMIT));
+    const skip = (page - 1) * limit;
+    const items = rows.slice(skip, skip + limit);
+
+    res.status(200).json({ items, total: rows.length, page, limit });
   } catch (error) {
     next(error);
   }

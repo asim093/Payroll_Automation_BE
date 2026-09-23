@@ -18,8 +18,8 @@ const requireIds = (req, res) => {
 
 exports.getApplicantReminders = async (req, res, next) => {
   try {
-    const { clientId, status, sortBy, sortDir, complianceReportLogId } = req.query;
-    const reminders = await listReminders({ clientId, status, sortBy, sortDir, complianceReportLogId });
+    const { clientId, status, sortBy, sortDir, complianceReportLogId, search, page, limit } = req.query;
+    const reminders = await listReminders({ clientId, status, sortBy, sortDir, complianceReportLogId, search, page, limit });
     res.status(200).json(reminders);
   } catch (error) {
     next(error);
