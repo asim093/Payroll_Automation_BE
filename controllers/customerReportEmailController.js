@@ -4,6 +4,7 @@ const {
   actionCustomerReportEmails,
   dismissCustomerReportEmails,
   undismissCustomerReportEmails,
+  deleteCustomerReportEmailDrafts,
 } = require('../services/customerReportEmailService');
 const { createEmailActionJob, getEmailActionJob, getActiveEmailActionJob } = require('../services/emailActionJobService');
 
@@ -117,6 +118,21 @@ exports.undismissCustomerReportEmails = async (req, res, next) => {
     const ids = requireIds(req, res);
     if (!ids) return;
     const results = await undismissCustomerReportEmails(ids);
+    res.status(200).json(results);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Bulk-delete for the Drafts view: removes the real Graph draft AND the
+// local row for each id — only rows actually in 'draft_created' are
+// touched (deleteCustomerReportEmailDrafts re-checks this per item
+// regardless of what the UI already filtered).
+exports.deleteCustomerReportEmailDrafts = async (req, res, next) => {
+  try {
+    const ids = requireIds(req, res);
+    if (!ids) return;
+    const results = await deleteCustomerReportEmailDrafts(ids);
     res.status(200).json(results);
   } catch (error) {
     next(error);

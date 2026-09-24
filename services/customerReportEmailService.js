@@ -267,6 +267,45 @@ const actionCustomerReportEmails = async (ids, operatorEmail, mode = 'draft', on
   return results;
 };
 
+// Deletes drafted customer report emails: the real Graph draft (if one
+// exists — a dry-run draft has no graphMessageId) AND the local row, for
+// each id. Only rows actually in 'draft_created' are touched. Per-item: the
+// DB row is removed even if the Graph delete fails, reported as a warning
+// rather than silently succeeding.
+const deleteCustomerReportEmailDrafts = async (ids) => {
+  const { deleteGraphDraft } = require('./customerEmailDraftService');
+  const results = [];
+
+  for (const id of ids || []) {
+    const row = await CustomerReportEmail.findById(id);
+    if (!row) {
+      results.push({ id, success: false, error: 'Not found' });
+      continue;
+    }
+    if (row.status !== 'draft_created') {
+      results.push({ id, success: false, error: `Not a draft (status: ${row.status})` });
+      continue;
+    }
+
+    let graphDeleted = null;
+    let warning;
+    if (row.graphMessageId) {
+      try {
+        await deleteGraphDraft(row.graphMessageId);
+        graphDeleted = true;
+      } catch (error) {
+        graphDeleted = false;
+        warning = `Graph draft could not be deleted (${error.message}) - the local record was still removed.`;
+      }
+    }
+
+    await CustomerReportEmail.deleteOne({ _id: id });
+    results.push({ id, success: true, graphDeleted, warning });
+  }
+
+  return results;
+};
+
 module.exports = {
   upsertCustomerReportEmailFromRun,
   listCustomerReportEmails,
@@ -274,4 +313,5 @@ module.exports = {
   actionCustomerReportEmails,
   dismissCustomerReportEmails,
   undismissCustomerReportEmails,
+  deleteCustomerReportEmailDrafts,
 };

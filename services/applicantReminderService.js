@@ -362,6 +362,48 @@ const actionReminders = async (ids, operatorEmail, mode = 'draft', onResult) => 
   return results;
 };
 
+// Deletes drafted reminders: the real Graph draft (if one exists — a
+// dry-run draft has no graphDraftId and nothing to delete there) AND the
+// local row, for each id. Only rows actually in 'draft_created' are
+// touched — the caller (controller) also enforces this, but this is
+// checked again here since it's the one thing that must never be
+// bypassed. Per-item: the DB row is removed even if the Graph delete
+// fails, but that failure is reported back as a warning rather than
+// silently succeeding.
+const deleteReminderDrafts = async (ids) => {
+  const { deleteGraphDraft } = require('./reminderDraftService');
+  const results = [];
+
+  for (const id of ids || []) {
+    const row = await ApplicantReminder.findById(id);
+    if (!row) {
+      results.push({ id, success: false, error: 'Not found' });
+      continue;
+    }
+    if (row.reminderStatus !== 'draft_created') {
+      results.push({ id, success: false, error: `Not a draft (status: ${row.reminderStatus})` });
+      continue;
+    }
+
+    let graphDeleted = null;
+    let warning;
+    if (row.graphDraftId) {
+      try {
+        await deleteGraphDraft(row.graphDraftId);
+        graphDeleted = true;
+      } catch (error) {
+        graphDeleted = false;
+        warning = `Graph draft could not be deleted (${error.message}) - the local record was still removed.`;
+      }
+    }
+
+    await ApplicantReminder.deleteOne({ _id: id });
+    results.push({ id, success: true, graphDeleted, warning });
+  }
+
+  return results;
+};
+
 module.exports = {
   upsertFromComplianceRun,
   listReminders,
@@ -369,6 +411,7 @@ module.exports = {
   actionReminders,
   dismissReminders,
   undismissReminders,
+  deleteReminderDrafts,
   normalizeSsn,
   hashSsn,
 };

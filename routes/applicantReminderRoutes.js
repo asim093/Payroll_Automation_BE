@@ -9,6 +9,7 @@ const {
   getActiveApplicantRemindersJob,
   dismissApplicantReminders,
   undismissApplicantReminders,
+  deleteApplicantReminderDrafts,
 } = require('../controllers/applicantReminderController');
 
 router.get('/', getApplicantReminders);
@@ -19,5 +20,6 @@ router.get('/action-job/active', getActiveApplicantRemindersJob);
 router.get('/action-job-status/:jobId', getApplicantRemindersJobStatus);
 router.post('/dismiss', dismissApplicantReminders);
 router.post('/undismiss', undismissApplicantReminders);
+router.post('/delete-drafts', deleteApplicantReminderDrafts);
 
 module.exports = router;

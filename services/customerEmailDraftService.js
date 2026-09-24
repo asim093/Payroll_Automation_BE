@@ -144,6 +144,28 @@ const createCustomerReportDraftEmail = async (payload) => {
   return { graphMessageId: createdMessage.id, payloadPreview: { from, to, subject, body } };
 };
 
+// Deletes a real Graph draft from the connected mailbox (delegated auth,
+// same /me/messages the draft was created under). A 404 means it's already
+// gone — treated as success, not an error, since the end state (no orphaned
+// draft) is what matters.
+const deleteGraphDraft = async (graphMessageId) => {
+  const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+  const { fetchWithRetry } = require('./graphService');
+
+  const accessToken = await getAccessTokenFromRefreshToken();
+  const response = await fetchWithRetry(`https://graph.microsoft.com/v1.0/me/messages/${graphMessageId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok && response.status !== 404) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`deleteGraphDraft failed: Graph API returned ${response.status} - ${errorBody}`);
+  }
+
+  return { alreadyGone: response.status === 404 };
+};
+
 // Real send path — same two-step create-then-send pattern as
 // reminderDraftService.sendReminderEmail (a real Graph message id comes back
 // for the audit trail; /me/sendMail would not return one). The send step
@@ -266,6 +288,7 @@ const createCustomerReportEmail = async (payload, mode = 'draft') => {
 module.exports = {
   createCustomerReportEmail,
   createCustomerReportDraftEmail,
+  deleteGraphDraft,
   sendCustomerReportEmail,
   buildCustomerReportEmailPayload,
   customerEmailFromAddress,

@@ -9,6 +9,7 @@ const {
   getActiveCustomerReportEmailsJob,
   dismissCustomerReportEmails,
   undismissCustomerReportEmails,
+  deleteCustomerReportEmailDrafts,
 } = require('../controllers/customerReportEmailController');
 
 router.get('/', getCustomerReportEmails);
@@ -19,5 +20,6 @@ router.get('/action-job/active', getActiveCustomerReportEmailsJob);
 router.get('/action-job-status/:jobId', getCustomerReportEmailsJobStatus);
 router.post('/dismiss', dismissCustomerReportEmails);
 router.post('/undismiss', undismissCustomerReportEmails);
+router.post('/delete-drafts', deleteCustomerReportEmailDrafts);
 
 module.exports = router;

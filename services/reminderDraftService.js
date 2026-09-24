@@ -211,6 +211,28 @@ const createGraphDraftEmail = async (payload) => {
   return { graphDraftId: createdMessage.id, payloadPreview: { from, to, subject, body } };
 };
 
+// Deletes a real Graph draft from the connected mailbox (delegated auth,
+// same /me/messages the draft was created under). A 404 means it's already
+// gone (e.g. deleted manually, or sent then removed) — treated as success,
+// not an error, since the end state (no orphaned draft) is what matters.
+const deleteGraphDraft = async (graphDraftId) => {
+  const { getAccessTokenFromRefreshToken } = require('./delegatedAuthService');
+  const { fetchWithRetry } = require('./graphService');
+
+  const accessToken = await getAccessTokenFromRefreshToken();
+  const response = await fetchWithRetry(`https://graph.microsoft.com/v1.0/me/messages/${graphDraftId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok && response.status !== 404) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`deleteGraphDraft failed: Graph API returned ${response.status} - ${errorBody}`);
+  }
+
+  return { alreadyGone: response.status === 404 };
+};
+
 // `mode` ('draft' | 'send') is the per-request choice from the Reminders page
 // UI toggle. Each mode has its own independent safety gate (see the two
 // constants above) — flipping one never affects the other:
@@ -254,6 +276,7 @@ const createReminderDraft = async (payload, mode = 'draft') => {
 module.exports = {
   createReminderDraft,
   createGraphDraftEmail,
+  deleteGraphDraft,
   sendReminderEmail,
   buildReminderPayload,
   reminderFromAddress,
