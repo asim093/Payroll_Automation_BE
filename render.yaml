@@ -143,3 +143,33 @@ services:
           property: hostport
       - key: INTERNAL_NOTIFY_SECRET
         sync: false
+
+  # Standalone cron for LogiForms ingestion - deliberately its own service,
+  # not piggybacked onto sharefile-bridge above. A real ingestion run takes
+  # ~10 minutes; Render crons don't overlap, so sharing a cron's script would
+  # stall that cron's own schedule for the whole run every time a new
+  # LogiForms file is detected. Render's cron timeout is a fixed 12-hour
+  # default (no dashboard option to configure it - confirmed via the
+  # sharefile-bridge cron's own Deploy settings), well above the real
+  # ~10-minute run time, so this is safe. Scheduled every 15 min; the real
+  # ~60-min interval is enforced inside runScheduledLogiFormsCheck via
+  # isProcessDue, so most ticks just no-op after a cheap DB read.
+  - type: cron
+    name: payroll-automation-logiforms-ingest
+    runtime: node
+    schedule: "*/15 * * * *"
+    buildCommand: npm install
+    startCommand: node runLogiFormsIngestOnly.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: SHAREFILE_CLIENT_ID
+        sync: false
+      - key: SHAREFILE_CLIENT_SECRET
+        sync: false
+      - key: SHAREFILE_SUBDOMAIN
+        sync: false
+      - key: SHAREFILE_USERNAME
+        sync: false
+      - key: SHAREFILE_PASSWORD
+        sync: false

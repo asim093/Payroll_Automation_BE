@@ -186,99 +186,112 @@ const swapStagingToLive = async (db) => {
 // CAS-based SystemStatus lock (processKey 'logiFormsIngest'), the same
 // mechanism mailSync/shareFileBridge already use — a second call while one
 // is in flight returns {skipped:true} instead of starting a duplicate run.
+// staleMs override: default runGuardedProcess staleness is 15 min, but a
+// real ingestion measures ~9.6 min end to end — too little margin (a
+// slightly slower run could exceed 15 min and let a concurrent tick
+// "reclaim" the lock while the first ingestion is still genuinely running,
+// both writing to the same staging collection). 30 min gives real headroom
+// above the measured real-world duration, matching shareFileBridgeRunner.js's
+// own precedent of overriding this default for its own longer-running work.
+const LOGIFORMS_LOCK_STALE_MS = 30 * 60 * 1000;
+
 const checkAndIngestLogiForms = ({ force = false } = {}) =>
-  runGuardedProcess(PROCESS_KEY, async () => {
-    const statusDoc = await ensureStatusDoc();
-    let tempDir = null;
+  runGuardedProcess(
+    PROCESS_KEY,
+    async () => {
+      const statusDoc = await ensureStatusDoc();
+      let tempDir = null;
 
-    try {
-      const { logiFormsFolderPath } = await getSettings();
-      if (!logiFormsFolderPath) {
-        throw new Error('LogiForms folder path is not configured. Set "LogiForms Folder Path" on the Settings page first.');
-      }
+      try {
+        const { logiFormsFolderPath } = await getSettings();
+        if (!logiFormsFolderPath) {
+          throw new Error('LogiForms folder path is not configured. Set "LogiForms Folder Path" on the Settings page first.');
+        }
 
-      statusDoc.status = 'checking';
-      await statusDoc.save();
-
-      const latestFile = await findLatestLogiFormsCsvInShareFile(logiFormsFolderPath);
-      if (!latestFile) {
-        throw new Error(`No LogiForms CSV file found in ShareFile folder "${logiFormsFolderPath}".`);
-      }
-
-      const unchanged =
-        !force &&
-        statusDoc.activeFileId === latestFile.fileId &&
-        statusDoc.activeFileModifiedAt &&
-        new Date(statusDoc.activeFileModifiedAt).getTime() === new Date(latestFile.modifiedAt).getTime();
-
-      statusDoc.lastCheckedAt = new Date();
-      if (force) statusDoc.lastForcedRecheckAt = new Date();
-      if (unchanged) {
-        statusDoc.status = 'ready';
+        statusDoc.status = 'checking';
         await statusDoc.save();
-        return { success: true, changed: false };
+
+        const latestFile = await findLatestLogiFormsCsvInShareFile(logiFormsFolderPath);
+        if (!latestFile) {
+          throw new Error(`No LogiForms CSV file found in ShareFile folder "${logiFormsFolderPath}".`);
+        }
+
+        const unchanged =
+          !force &&
+          statusDoc.activeFileId === latestFile.fileId &&
+          statusDoc.activeFileModifiedAt &&
+          new Date(statusDoc.activeFileModifiedAt).getTime() === new Date(latestFile.modifiedAt).getTime();
+
+        statusDoc.lastCheckedAt = new Date();
+        if (force) statusDoc.lastForcedRecheckAt = new Date();
+        if (unchanged) {
+          statusDoc.status = 'ready';
+          await statusDoc.save();
+          return { success: true, changed: false };
+        }
+
+        statusDoc.status = 'ingesting';
+        statusDoc.lastIngestStartedAt = new Date();
+        await statusDoc.save();
+
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logiforms-ingest-'));
+        const localFilePath = path.join(tempDir, latestFile.fileName);
+        await downloadFileContentByIdToPath(latestFile.fileId, localFilePath);
+
+        const db = mongoose.connection.db;
+        const stagingCollection = await prepareStagingCollection(db);
+        const { totalRowsRead, uniqueRecordCount, skippedRows } = await streamIngestIntoStaging(
+          localFilePath,
+          stagingCollection
+        );
+
+        const oldCollectionName = await swapStagingToLive(db);
+
+        statusDoc.status = 'ready';
+        statusDoc.activeFileId = latestFile.fileId;
+        statusDoc.activeFileName = latestFile.fileName;
+        statusDoc.activeFileModifiedAt = latestFile.modifiedAt;
+        statusDoc.lastIngestCompletedAt = new Date();
+        statusDoc.totalRowsRead = totalRowsRead;
+        statusDoc.uniqueRecordCount = uniqueRecordCount;
+        statusDoc.skippedRowsCount = skippedRows.length;
+        statusDoc.skippedRows = skippedRows;
+        statusDoc.lastError = null;
+        if (oldCollectionName) {
+          statusDoc.pendingDrops.push({
+            collectionName: oldCollectionName,
+            droppedOldCollectionAt: new Date(),
+            dropAfter: new Date(Date.now() + OLD_COLLECTION_RETENTION_MS),
+          });
+        }
+        await statusDoc.save();
+
+        console.log(
+          `[LOGIFORMS-INGEST] Ingested "${latestFile.fileName}": ${totalRowsRead} lines read, ${uniqueRecordCount} unique records, ${skippedRows.length} skipped rows.`
+        );
+
+        return { success: true, changed: true, totalRowsRead, uniqueRecordCount, skippedRowsCount: skippedRows.length };
+      } catch (error) {
+        console.error(`[LOGIFORMS-INGEST] Failed: ${formatError(error)}`);
+        statusDoc.status = 'failed';
+        statusDoc.lastError = error.message;
+        statusDoc.lastCheckedAt = new Date();
+        await statusDoc.save().catch(() => {});
+        // Best-effort: don't leave a half-built staging collection around for
+        // the next attempt to trip over — the live collection was never
+        // touched at this point (the rename swap only happens after a fully
+        // successful ingest), so old data is still intact and queryable.
+        await mongoose.connection.db
+          .collection(STAGING_COLLECTION)
+          .drop()
+          .catch(() => {});
+        return { success: false, error: error.message };
+      } finally {
+        if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
       }
-
-      statusDoc.status = 'ingesting';
-      statusDoc.lastIngestStartedAt = new Date();
-      await statusDoc.save();
-
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logiforms-ingest-'));
-      const localFilePath = path.join(tempDir, latestFile.fileName);
-      await downloadFileContentByIdToPath(latestFile.fileId, localFilePath);
-
-      const db = mongoose.connection.db;
-      const stagingCollection = await prepareStagingCollection(db);
-      const { totalRowsRead, uniqueRecordCount, skippedRows } = await streamIngestIntoStaging(
-        localFilePath,
-        stagingCollection
-      );
-
-      const oldCollectionName = await swapStagingToLive(db);
-
-      statusDoc.status = 'ready';
-      statusDoc.activeFileId = latestFile.fileId;
-      statusDoc.activeFileName = latestFile.fileName;
-      statusDoc.activeFileModifiedAt = latestFile.modifiedAt;
-      statusDoc.lastIngestCompletedAt = new Date();
-      statusDoc.totalRowsRead = totalRowsRead;
-      statusDoc.uniqueRecordCount = uniqueRecordCount;
-      statusDoc.skippedRowsCount = skippedRows.length;
-      statusDoc.skippedRows = skippedRows;
-      statusDoc.lastError = null;
-      if (oldCollectionName) {
-        statusDoc.pendingDrops.push({
-          collectionName: oldCollectionName,
-          droppedOldCollectionAt: new Date(),
-          dropAfter: new Date(Date.now() + OLD_COLLECTION_RETENTION_MS),
-        });
-      }
-      await statusDoc.save();
-
-      console.log(
-        `[LOGIFORMS-INGEST] Ingested "${latestFile.fileName}": ${totalRowsRead} lines read, ${uniqueRecordCount} unique records, ${skippedRows.length} skipped rows.`
-      );
-
-      return { success: true, changed: true, totalRowsRead, uniqueRecordCount, skippedRowsCount: skippedRows.length };
-    } catch (error) {
-      console.error(`[LOGIFORMS-INGEST] Failed: ${formatError(error)}`);
-      statusDoc.status = 'failed';
-      statusDoc.lastError = error.message;
-      statusDoc.lastCheckedAt = new Date();
-      await statusDoc.save().catch(() => {});
-      // Best-effort: don't leave a half-built staging collection around for
-      // the next attempt to trip over — the live collection was never
-      // touched at this point (the rename swap only happens after a fully
-      // successful ingest), so old data is still intact and queryable.
-      await mongoose.connection.db
-        .collection(STAGING_COLLECTION)
-        .drop()
-        .catch(() => {});
-      return { success: false, error: error.message };
-    } finally {
-      if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
+    },
+    { staleMs: LOGIFORMS_LOCK_STALE_MS }
+  );
 
 // Drops any old (renamed-aside) collection whose 48h retention window has
 // passed. Called from the same hourly cron tick as checkAndIngestLogiForms

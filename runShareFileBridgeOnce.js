@@ -35,27 +35,6 @@ const isForced = () => process.argv.includes('--force') || process.env.FORCE_RUN
         console.log('[RUN-SHAREFILE-BRIDGE] Completed successfully.');
       }
     }
-
-    // Piggybacks on this same cron tick rather than its own Render cron
-    // service — no new process/billing to maintain. This is independent of
-    // the shareFileBridge due-check above (it has its own ~60-min throttle
-    // via isProcessDue('logiFormsIngest', ...) inside runScheduledLogiFormsCheck),
-    // so it runs on every tick attempt regardless of whether shareFileBridge
-    // itself was due this time; most ticks it will just no-op until its own
-    // interval has elapsed.
-    try {
-      const { runScheduledLogiFormsCheck } = require('./services/logiFormsIngestService');
-      const logiFormsResult = await runScheduledLogiFormsCheck();
-      if (logiFormsResult?.skipped) {
-        console.log(`[RUN-SHAREFILE-BRIDGE] LogiForms check: not due yet (~${logiFormsResult.minutesRemaining} min remaining).`);
-      } else if (logiFormsResult?.success === false) {
-        console.error(`[RUN-SHAREFILE-BRIDGE] LogiForms check failed: ${logiFormsResult.error}`);
-      } else {
-        console.log(`[RUN-SHAREFILE-BRIDGE] LogiForms check completed:`, JSON.stringify(logiFormsResult));
-      }
-    } catch (error) {
-      console.error('[RUN-SHAREFILE-BRIDGE] LogiForms check unexpected error:', error.message);
-    }
   } catch (error) {
     failed = true;
     console.error('[RUN-SHAREFILE-BRIDGE] Unexpected error:', error.message);

@@ -83,31 +83,66 @@ const parseLogiFormsLine = (rawLine, lineNumber, headerColumns) => {
   let fields;
   try {
     [fields] = parse(line, { relax_column_count: true });
-  } catch (error) {
-    // Best-effort EIN attribution for a row that failed structured CSV
-    // parsing: EIN is a short numeric column, so a naive split on commas
-    // almost always still isolates it correctly even when a DIFFERENT
-    // column (e.g. an unbalanced quote in a name/address field) is what
-    // actually broke the parser. Only usable once the header (and so the
-    // EIN column's position) is known; a malformed header line itself can't
-    // be attributed and gets einGuess: null.
-    let einGuess = null;
-    if (headerColumns) {
-      const einColumnIndex = headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS.ein));
-      if (einColumnIndex !== -1) {
-        const looseFields = line.split(',');
-        einGuess = normalizeFein(looseFields[einColumnIndex]) || null;
+  } catch (strictError) {
+    // Fallback ONLY reached after the strict parse above has already
+    // failed — investigation found every real failure in this file is a
+    // lone, un-doubled `"` inside a quoted field (a nickname, an apostrophe
+    // typed as `"`, a quoted apartment/street letter), never an ambiguous
+    // row. relax_quotes tells the library to treat such a stray quote as
+    // literal text instead of a syntax error.
+    //
+    // Safety check: relax_quotes can also silently MERGE two adjacent
+    // fields into one when the stray quote sits right at a field boundary
+    // (e.g. a trailing quote right after a Zip value swallows the next
+    // column too) — that shifts every later column's position, which would
+    // silently corrupt tracked fields like SSN/DateSubmitted rather than
+    // just fixing an untracked one. Only trust the relaxed result if it
+    // produced the SAME number of columns as the header — a genuine
+    // literal-quote fix never changes the column count, so this rejects
+    // exactly the corrupting cases while accepting the safe ones. If the
+    // column count doesn't match, this falls through to the original
+    // skipped-row path unchanged.
+    let relaxedFields = null;
+    try {
+      const [attempt] = parse(line, { relax_column_count: true, relax_quotes: true });
+      if (headerColumns && attempt.length === headerColumns.length) {
+        relaxedFields = attempt;
       }
+    } catch {
+      // relax_quotes still couldn't parse it — falls through to skipped.
     }
-    return {
-      type: 'skipped',
-      skippedRow: {
-        lineNumber,
-        snippet: line.length > 200 ? `${line.slice(0, 200)}…` : line,
-        error: error.message,
-        einGuess,
-      },
-    };
+
+    if (relaxedFields) {
+      console.warn(
+        `[LOGIFORMS-PARSE] Recovered line ${lineNumber} via relax_quotes fallback (stray literal quote inside a field) — column count matched the header, so this is trusted.`
+      );
+      fields = relaxedFields;
+    } else {
+      // Best-effort EIN attribution for a row that failed structured CSV
+      // parsing: EIN is a short numeric column, so a naive split on commas
+      // almost always still isolates it correctly even when a DIFFERENT
+      // column (e.g. an unbalanced quote in a name/address field) is what
+      // actually broke the parser. Only usable once the header (and so the
+      // EIN column's position) is known; a malformed header line itself
+      // can't be attributed and gets einGuess: null.
+      let einGuess = null;
+      if (headerColumns) {
+        const einColumnIndex = headerColumns.indexOf(normalizeHeader(EXPECTED_HEADERS.ein));
+        if (einColumnIndex !== -1) {
+          const looseFields = line.split(',');
+          einGuess = normalizeFein(looseFields[einColumnIndex]) || null;
+        }
+      }
+      return {
+        type: 'skipped',
+        skippedRow: {
+          lineNumber,
+          snippet: line.length > 200 ? `${line.slice(0, 200)}…` : line,
+          error: strictError.message,
+          einGuess,
+        },
+      };
+    }
   }
 
   if (lineNumber === 1) {
